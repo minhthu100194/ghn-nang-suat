@@ -221,9 +221,10 @@ app.post('/api/upload-batch', async (req, res) => {
         client.release();
     }
 });
+// 2b. Import từ Google Drive URL (xử lý ngầm, không bị timeout 30s)
+let importStatus = { status: 'idle', progress: 0, message: '', count: 0 };
 
-// 2b. Import từ Google Drive URL (cho file lớn 96MB+)
-app.post('/api/import-url', async (req, res) => {
+app.post('/api/import-url', (req, res) => {
     const { password, url } = req.body;
     if (password !== 'admin123') {
         return res.status(401).json({ success: false, message: 'Sai mật khẩu Admin' });
@@ -231,137 +232,159 @@ app.post('/api/import-url', async (req, res) => {
     if (!url) {
         return res.status(400).json({ success: false, message: 'Thiếu link Google Drive' });
     }
+    if (importStatus.status === 'running') {
+        return res.json({ success: true, message: 'Import đang chạy, vui lòng đợi...' });
+    }
 
+    // Trả lời ngay lập tức, xử lý ngầm phía sau
+    importStatus = { status: 'running', progress: 0, message: 'Đang tải file từ Google Drive...', count: 0 };
+    res.json({ success: true, message: 'Bắt đầu import! Vui lòng đợi...' });
+
+    // Xử lý ngầm
+    processImport(url).catch(err => {
+        console.error('Import background error:', err);
+        importStatus = { status: 'error', progress: 0, message: 'Lỗi: ' + err.message, count: 0 };
+    });
+});
+
+app.get('/api/import-status', (req, res) => {
+    res.json(importStatus);
+});
+
+async function processImport(url) {
     // Chuyển Google Drive share link thành direct download link
     let downloadUrl = url;
     
-    // Format: https://drive.google.com/file/d/{FILE_ID}/view
     let match = url.match(/\/file\/d\/([^/]+)/);
     if (match) {
         downloadUrl = `https://drive.google.com/uc?export=download&confirm=t&id=${match[1]}`;
     }
-    // Format: https://drive.google.com/open?id={FILE_ID}
     match = url.match(/[?&]id=([^&]+)/);
     if (match && !downloadUrl.includes('uc?export')) {
         downloadUrl = `https://drive.google.com/uc?export=download&confirm=t&id=${match[1]}`;
     }
-    // Format: Google Sheets export
     if (url.includes('docs.google.com/spreadsheets')) {
         const sheetMatch = url.match(/\/d\/([^/]+)/);
         if (sheetMatch) {
-            // Thử export sheet đầu tiên
             downloadUrl = `https://docs.google.com/spreadsheets/d/${sheetMatch[1]}/export?format=csv&gid=0`;
         }
     }
 
     console.log('Importing from URL:', downloadUrl);
+    importStatus.message = 'Đang tải file từ Google Drive...';
 
-    try {
-        // Tải file từ Google Drive
-        const response = await fetch(downloadUrl, { 
-            redirect: 'follow',
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        
-        if (!response.ok) {
-            return res.status(400).json({ success: false, message: `Không tải được file (HTTP ${response.status}). Kiểm tra link và quyền chia sẻ!` });
-        }
-
-        const csvText = await response.text();
-        console.log(`Downloaded CSV: ${(csvText.length / 1024 / 1024).toFixed(1)}MB`);
-
-        // Parse CSV
-        const lines = [];
-        let current = '';
-        let inQuotes = false;
-        for (let i = 0; i < csvText.length; i++) {
-            const ch = csvText[i];
-            if (ch === '"') { inQuotes = !inQuotes; }
-            else if ((ch === '\n' || (ch === '\r' && csvText[i+1] !== '\n')) && !inQuotes) {
-                if (current.trim()) lines.push(current);
-                current = '';
-            } else if (ch === '\r' && csvText[i+1] === '\n' && !inQuotes) {
-                if (current.trim()) lines.push(current);
-                current = '';
-                i++; // skip \n
-            }
-            else { current += ch; }
-        }
-        if (current.trim()) lines.push(current);
-
-        if (lines.length < 2) {
-            return res.json({ success: false, message: 'File CSV trống hoặc không đọc được' });
-        }
-
-        const parseRow = (line) => {
-            const cells = [];
-            let cell = '';
-            let q = false;
-            for (let i = 0; i < line.length; i++) {
-                const ch = line[i];
-                if (ch === '"') { q = !q; }
-                else if (ch === ',' && !q) { cells.push(cell.trim()); cell = ''; }
-                else { cell += ch; }
-            }
-            cells.push(cell.trim());
-            return cells;
-        };
-
-        const headers = parseRow(lines[0]);
-        const idIdx = headers.findIndex(h => h.toLowerCase() === 'id' || h.toLowerCase() === 'textid' || h.toLowerCase().includes('mã nv') || h.toLowerCase().includes('mã nhân viên'));
-        const cccdIdx = headers.findIndex(h => h.toLowerCase() === 'cccd' || h.toLowerCase() === 'cmnd');
-
-        // Insert vào PostgreSQL theo batch
-        const client = await pool.connect();
-        try {
-            await client.query('DELETE FROM records');
-            adminCache = null;
-
-            let totalInserted = 0;
-            const BATCH = 500;
-            
-            for (let i = 1; i < lines.length; i += BATCH) {
-                const values = [];
-                const params = [];
-                let paramIdx = 0;
-
-                for (let j = i; j < Math.min(i + BATCH, lines.length); j++) {
-                    const cells = parseRow(lines[j]);
-                    const emp_id = idIdx >= 0 ? (cells[idIdx] || '').trim() : '';
-                    if (!emp_id) continue;
-
-                    const cccd = cccdIdx >= 0 ? (cells[cccdIdx] || '123456').trim() : '123456';
-                    const obj = {};
-                    headers.forEach((h, idx) => { obj[h] = cells[idx] || ''; });
-
-                    values.push(`($${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3})`);
-                    params.push(emp_id, cccd, JSON.stringify(obj));
-                    paramIdx += 3;
-                    totalInserted++;
-                }
-
-                if (values.length > 0) {
-                    await client.query(
-                        `INSERT INTO records (emp_id, cccd, data) VALUES ${values.join(',')}`,
-                        params
-                    );
-                }
-            }
-
-            adminCache = null;
-            console.log(`Import complete: ${totalInserted} records`);
-            res.json({ success: true, message: `✅ Import thành công! ${totalInserted.toLocaleString()} bản ghi` });
-        } catch (dbErr) {
-            console.error('Import DB error:', dbErr);
-            res.status(500).json({ success: false, message: 'Lỗi lưu CSDL: ' + dbErr.message });
-        } finally {
-            client.release();
-        }
-    } catch (err) {
-        console.error('Import URL error:', err);
-        res.status(500).json({ success: false, message: 'Lỗi tải file: ' + err.message });
+    const response = await fetch(downloadUrl, { 
+        redirect: 'follow',
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    
+    if (!response.ok) {
+        importStatus = { status: 'error', progress: 0, message: `Không tải được file (HTTP ${response.status}). Kiểm tra link và quyền chia sẻ!`, count: 0 };
+        return;
     }
-});
+
+    const csvText = await response.text();
+    const sizeMB = (csvText.length / 1024 / 1024).toFixed(1);
+    console.log(`Downloaded CSV: ${sizeMB}MB`);
+    importStatus.message = `Đã tải ${sizeMB}MB. Đang phân tích dữ liệu...`;
+    importStatus.progress = 20;
+
+    // Parse CSV
+    const lines = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < csvText.length; i++) {
+        const ch = csvText[i];
+        if (ch === '"') { inQuotes = !inQuotes; }
+        else if ((ch === '\n' || (ch === '\r' && csvText[i+1] !== '\n')) && !inQuotes) {
+            if (current.trim()) lines.push(current);
+            current = '';
+        } else if (ch === '\r' && csvText[i+1] === '\n' && !inQuotes) {
+            if (current.trim()) lines.push(current);
+            current = '';
+            i++;
+        }
+        else { current += ch; }
+    }
+    if (current.trim()) lines.push(current);
+
+    if (lines.length < 2) {
+        importStatus = { status: 'error', progress: 0, message: 'File CSV trống hoặc không đọc được', count: 0 };
+        return;
+    }
+
+    const parseRow = (line) => {
+        const cells = [];
+        let cell = '';
+        let q = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (ch === '"') { q = !q; }
+            else if (ch === ',' && !q) { cells.push(cell.trim()); cell = ''; }
+            else { cell += ch; }
+        }
+        cells.push(cell.trim());
+        return cells;
+    };
+
+    const headers = parseRow(lines[0]);
+    const idIdx = headers.findIndex(h => h.toLowerCase() === 'id' || h.toLowerCase() === 'textid' || h.toLowerCase().includes('mã nv') || h.toLowerCase().includes('mã nhân viên'));
+    const cccdIdx = headers.findIndex(h => h.toLowerCase() === 'cccd' || h.toLowerCase() === 'cmnd');
+
+    importStatus.message = `Đang lưu ${(lines.length - 1).toLocaleString()} dòng vào CSDL...`;
+    importStatus.progress = 40;
+
+    const client = await pool.connect();
+    try {
+        await client.query('DELETE FROM records');
+        adminCache = null;
+
+        let totalInserted = 0;
+        const BATCH = 500;
+        const totalLines = lines.length - 1;
+        
+        for (let i = 1; i < lines.length; i += BATCH) {
+            const values = [];
+            const params = [];
+            let paramIdx = 0;
+
+            for (let j = i; j < Math.min(i + BATCH, lines.length); j++) {
+                const cells = parseRow(lines[j]);
+                const emp_id = idIdx >= 0 ? (cells[idIdx] || '').trim() : '';
+                if (!emp_id) continue;
+
+                const cccd = cccdIdx >= 0 ? (cells[cccdIdx] || '123456').trim() : '123456';
+                const obj = {};
+                headers.forEach((h, idx) => { obj[h] = cells[idx] || ''; });
+
+                values.push(`($${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3})`);
+                params.push(emp_id, cccd, JSON.stringify(obj));
+                paramIdx += 3;
+                totalInserted++;
+            }
+
+            if (values.length > 0) {
+                await client.query(
+                    `INSERT INTO records (emp_id, cccd, data) VALUES ${values.join(',')}`,
+                    params
+                );
+            }
+
+            const progress = 40 + Math.round(((i - 1) / totalLines) * 55);
+            importStatus = { status: 'running', progress, message: `Đang lưu... ${totalInserted.toLocaleString()} / ${totalLines.toLocaleString()} dòng`, count: totalInserted };
+        }
+
+        adminCache = null;
+        console.log(`Import complete: ${totalInserted} records`);
+        importStatus = { status: 'done', progress: 100, message: `✅ Import thành công! ${totalInserted.toLocaleString()} bản ghi`, count: totalInserted };
+    } catch (dbErr) {
+        console.error('Import DB error:', dbErr);
+        importStatus = { status: 'error', progress: 0, message: 'Lỗi lưu CSDL: ' + dbErr.message, count: 0 };
+    } finally {
+        client.release();
+    }
+}
+
 
 // 3. Schedule API - Lấy lịch làm việc từ Google Sheets
 const SCHEDULE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1n6pRyTVUTKoZ1sm7Sf6fBeZKtPkJ4EngXjIqj_yTyLo/gviz/tq?tqx=out:csv&gid=705507122';
