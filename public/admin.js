@@ -373,3 +373,50 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     btnUpload.textContent = 'Tải lên';
 });
 
+// === GOOGLE DRIVE IMPORT ===
+document.getElementById('btn-import').addEventListener('click', async () => {
+    const urlInput = document.getElementById('drive-url');
+    const url = urlInput.value.trim();
+    const btnImport = document.getElementById('btn-import');
+    
+    if (!url) {
+        uploadMsg.textContent = 'Vui lòng dán link Google Drive';
+        uploadMsg.className = 'upload-msg error';
+        uploadMsg.classList.remove('hidden');
+        return;
+    }
+
+    btnImport.disabled = true;
+    btnImport.textContent = 'Đang import... (có thể mất vài phút)';
+    uploadMsg.textContent = '⏳ Server đang tải file từ Google Drive và xử lý... Vui lòng đợi!';
+    uploadMsg.className = 'upload-msg success';
+    uploadMsg.classList.remove('hidden');
+
+    try {
+        const res = await fetch('/api/import-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: adminPass, url }),
+            signal: AbortSignal.timeout(600000) // 10 phút timeout
+        });
+        const data = await res.json();
+
+        uploadMsg.textContent = data.message;
+        uploadMsg.className = 'upload-msg ' + (data.success ? 'success' : 'error');
+        uploadMsg.classList.remove('hidden');
+
+        if (data.success) {
+            initialLoad = true;
+            deptSelect.innerHTML = '<option value="all">Tất cả bộ phận</option>';
+            shiftSelect.innerHTML = '<option value="all">Tất cả ca làm</option>';
+            await fetchDashboardData();
+        }
+    } catch (err) {
+        uploadMsg.textContent = 'Lỗi kết nối. Thử lại hoặc kiểm tra link!';
+        uploadMsg.className = 'upload-msg error';
+        uploadMsg.classList.remove('hidden');
+    }
+
+    btnImport.disabled = false;
+    btnImport.textContent = 'Import từ Google Drive';
+});

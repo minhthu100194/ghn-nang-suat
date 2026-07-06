@@ -349,3 +349,23 @@ body {
     .stat-grid { grid-template-columns: 1fr 1fr; }
     .search-input { width: 100%; }
 }
+
+/* Google Drive Import */
+.drive-input {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    background: #1e293b;
+    color: #e2e8f0;
+    font-size: 0.85rem;
+    margin-bottom: 8px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.drive-input:focus {
+    border-color: #6366f1;
+}
+.import-section {
+    margin-bottom: 4px;
+}
