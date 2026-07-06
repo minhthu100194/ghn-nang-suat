@@ -253,37 +253,71 @@ app.get('/api/import-status', (req, res) => {
 
 async function processImport(url) {
     // Chuyển Google Drive share link thành direct download link
-    let downloadUrl = url;
+    let fileId = null;
     
     let match = url.match(/\/file\/d\/([^/]+)/);
-    if (match) {
-        downloadUrl = `https://drive.google.com/uc?export=download&confirm=t&id=${match[1]}`;
-    }
+    if (match) fileId = match[1];
     match = url.match(/[?&]id=([^&]+)/);
-    if (match && !downloadUrl.includes('uc?export')) {
-        downloadUrl = `https://drive.google.com/uc?export=download&confirm=t&id=${match[1]}`;
-    }
+    if (match && !fileId) fileId = match[1];
+    
+    let downloadUrl;
     if (url.includes('docs.google.com/spreadsheets')) {
         const sheetMatch = url.match(/\/d\/([^/]+)/);
         if (sheetMatch) {
             downloadUrl = `https://docs.google.com/spreadsheets/d/${sheetMatch[1]}/export?format=csv&gid=0`;
         }
+    } else if (fileId) {
+        // Dùng domain mới của Google cho file lớn
+        downloadUrl = `https://drive.usercontent.google.com/download?id=${fileId}&export=download&confirm=t`;
+    } else {
+        downloadUrl = url;
     }
 
     console.log('Importing from URL:', downloadUrl);
     importStatus.message = 'Đang tải file từ Google Drive...';
 
-    const response = await fetch(downloadUrl, { 
-        redirect: 'follow',
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    
-    if (!response.ok) {
-        importStatus = { status: 'error', progress: 0, message: `Không tải được file (HTTP ${response.status}). Kiểm tra link và quyền chia sẻ!`, count: 0 };
-        return;
+    // Thử tải file, nếu bị chặn thì thử URL khác
+    let csvText = '';
+    const urls = [
+        downloadUrl,
+        fileId ? `https://drive.google.com/uc?export=download&confirm=t&id=${fileId}` : null,
+        fileId ? `https://drive.usercontent.google.com/download?id=${fileId}&confirm=t` : null,
+    ].filter(Boolean);
+
+    for (const tryUrl of urls) {
+        try {
+            console.log('Trying URL:', tryUrl);
+            const response = await fetch(tryUrl, { 
+                redirect: 'follow',
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0' }
+            });
+            
+            if (!response.ok) {
+                console.log(`HTTP ${response.status} for ${tryUrl}`);
+                continue;
+            }
+
+            csvText = await response.text();
+            
+            // Kiểm tra nếu nhận được HTML thay vì CSV (Google chặn download)
+            if (csvText.trim().startsWith('<!DOCTYPE') || csvText.trim().startsWith('<html')) {
+                console.log('Received HTML instead of CSV, trying next URL...');
+                csvText = '';
+                continue;
+            }
+            
+            // Thành công
+            break;
+        } catch (e) {
+            console.log(`Error downloading from ${tryUrl}:`, e.message);
+            continue;
+        }
     }
 
-    const csvText = await response.text();
+    if (!csvText) {
+        importStatus = { status: 'error', progress: 0, message: 'Không tải được file. Kiểm tra: 1) File phải chia sẻ "Bất kỳ ai có link" 2) File phải là CSV', count: 0 };
+        return;
+    }
     const sizeMB = (csvText.length / 1024 / 1024).toFixed(1);
     console.log(`Downloaded CSV: ${sizeMB}MB`);
     importStatus.message = `Đã tải ${sizeMB}MB. Đang phân tích dữ liệu...`;
