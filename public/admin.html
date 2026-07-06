@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GHN - Admin Dashboard</title>
+    <link rel="icon" href="logo-ghn.png" type="image/png">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <!-- Login -->
+    <div class="admin-login" id="admin-login">
+        <div class="login-box">
+            <img src="logo-ghn.png" alt="GHN" class="admin-logo-img">
+            <h1>Admin Dashboard</h1>
+            <p class="sub">Nhập mật khẩu để truy cập quản lý</p>
+            <div id="admin-error" class="error-msg hidden"></div>
+            <form id="admin-form">
+                <input type="password" id="admin-pass" placeholder="Mật khẩu Admin" required>
+                <button type="submit" class="btn-login">Đăng Nhập →</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Dashboard -->
+    <div class="admin-dashboard hidden" id="admin-dashboard">
+        <nav class="topbar">
+            <div class="topbar-left">
+                <img src="logo-ghn.png" alt="GHN" class="nav-logo">
+                <span class="nav-title">Admin Dashboard</span>
+            </div>
+            <div class="topbar-right">
+                <a href="/" class="nav-link">← Trang NV</a>
+                <button id="admin-logout" class="btn-logout">Đăng xuất</button>
+            </div>
+        </nav>
+
+        <main class="main-content">
+            <!-- Filters -->
+            <div class="filter-bar card">
+                <div class="filter-group">
+                    <label>🏢 Bộ phận:</label>
+                    <select id="filter-dept" class="filter-select">
+                        <option value="all">Tất cả bộ phận</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label>⏰ Ca làm:</label>
+                    <select id="filter-shift" class="filter-select">
+                        <option value="all">Tất cả ca làm</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Stat Cards -->
+            <div class="stat-grid">
+                <div class="stat-card blue">
+                    <div class="stat-icon">👥</div>
+                    <div class="stat-info">
+                        <div class="stat-num" id="s-emp">0</div>
+                        <div class="stat-label">Nhân viên</div>
+                    </div>
+                </div>
+                <div class="stat-card orange">
+                    <div class="stat-icon">📦</div>
+                    <div class="stat-info">
+                        <div class="stat-num" id="s-prod">0</div>
+                        <div class="stat-label">Tổng sản lượng</div>
+                    </div>
+                </div>
+                <div class="stat-card green">
+                    <div class="stat-icon">📊</div>
+                    <div class="stat-info">
+                        <div class="stat-num" id="s-avg">0</div>
+                        <div class="stat-label">TB / Nhân viên</div>
+                    </div>
+                </div>
+                <div class="stat-card purple">
+                    <div class="stat-icon">💰</div>
+                    <div class="stat-info">
+                        <div class="stat-num" id="s-salary">0</div>
+                        <div class="stat-label">Tổng lương</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chart + Upload -->
+            <div class="content-grid">
+                <div class="card chart-card">
+                    <h3>🏆 Top 10 Sản Lượng</h3>
+                    <div class="chart-wrap"><canvas id="top-chart"></canvas></div>
+                </div>
+                <div class="card upload-card">
+                    <h3>📤 Upload Dữ Liệu</h3>
+                    <form id="upload-form" enctype="multipart/form-data">
+                        <div class="upload-zone" id="drop-zone">
+                            <div class="upload-icon">📁</div>
+                            <p>Kéo thả file CSV hoặc click để chọn</p>
+                            <input type="file" id="file-input" accept=".csv" hidden>
+                        </div>
+                        <div id="file-name" class="file-name hidden"></div>
+                        <button type="submit" class="btn-upload" id="btn-upload" disabled>Tải lên</button>
+                    </form>
+                    <div id="upload-msg" class="upload-msg hidden"></div>
+                </div>
+            </div>
+
+            <!-- Employee Table -->
+            <div class="card table-card">
+                <div class="table-header">
+                    <h3>📋 Bảng Xếp Hạng Nhân Viên</h3>
+                    <input type="text" id="search-emp" placeholder="🔍 Tìm kiếm..." class="search-input">
+                </div>
+                <div class="table-scroll">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>Mã NV</th>
+                                <th>Họ Tên</th>
+                                <th>Tiền Lương</th>
+                                <th>Sản Lượng</th>
+                                <th>Số Ngày</th>
+                            </tr>
+                        </thead>
+                        <tbody id="emp-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="admin.js?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GHN Năng Suất</title>
+    <link rel="icon" href="logo-ghn.png" type="image/png">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+</head>
+<body>
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    
+    <!-- Màn hình Đăng nhập -->
+    <div class="glass-card login-card" id="login-container">
+        <div class="logo"><img src="logo-ghn.png" alt="GHN" class="logo-img"> GHN Năng Suất</div>
+        <h2>Tra Cứu Dữ Liệu</h2>
+        <p class="subtitle">Vui lòng đăng nhập để xem thông tin năng suất</p>
+        <div id="login-error" class="error-message hidden"></div>
+        <form id="login-form">
+            <div class="input-group">
+                <label for="emp-id">Mã Nhân Viên (ID)</label>
+                <input type="text" id="emp-id" required placeholder="Nhập mã nhân viên">
+            </div>
+            <div class="input-group">
+                <label for="emp-cccd">Căn cước công dân (Mật khẩu)</label>
+                <input type="password" id="emp-cccd" required placeholder="Mặc định: 123456">
+            </div>
+            <button type="submit" class="btn primary-btn">Đăng Nhập <span class="arrow">→</span></button>
+        </form>
+    </div>
+
+    <!-- Màn hình Dashboard -->
+    <div class="glass-card dashboard-card hidden" id="dashboard-container">
+        <header class="dash-header">
+            <div class="user-info">
+                <div class="dash-logo"><img src="logo-ghn.png" alt="GHN" class="dash-logo-img"> GHN Năng Suất</div>
+                <h2 class="welcome-text">Xin chào, <span id="user-name" class="highlight"></span>!</h2>
+                <p class="emp-id-text">Mã NV: <span id="user-id"></span></p>
+            </div>
+            <button id="logout-btn" class="btn logout-btn">Đăng xuất</button>
+        </header>
+        
+        <!-- Tab Navigation -->
+        <div class="tab-nav">
+            <button class="tab-btn active" data-tab="tab-productivity">📊 Năng Suất</button>
+            <button class="tab-btn" data-tab="tab-schedule">📅 Lịch</button>
+            <button class="tab-btn" data-tab="tab-discipline">⚠️ Chấm Công</button>
+        </div>
+
+        <!-- Tab: Năng Suất -->
+        <div class="tab-content active" id="tab-productivity">
+            <div class="stats-overview">
+                <div class="stat-box">
+                    <h4>Tổng số Thao tác</h4>
+                    <div class="value" id="total-actions">0</div>
+                </div>
+                <div class="stat-box">
+                    <h4>Tổng Sản lượng</h4>
+                    <div class="value highlight-val" id="total-qty">0</div>
+                </div>
+                <div class="stat-box">
+                    <h4>Số ngày làm việc</h4>
+                    <div class="value" id="total-days">0</div>
+                </div>
+            </div>
+
+            <h3 class="section-title">📅 Sản lượng theo ngày</h3>
+            <div class="chart-container">
+                <canvas id="daily-chart"></canvas>
+            </div>
+
+            <h3 class="section-title">📊 Tổng sản lượng theo thao tác</h3>
+            <div class="table-container">
+                <table class="modern-table">
+                    <thead>
+                        <tr>
+                            <th>Tên Thao Tác</th>
+                            <th>Sản Lượng (Stop/Đơn)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="actions-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Lịch Làm Việc -->
+        <div class="tab-content" id="tab-schedule">
+            <div class="week-nav">
+                <button class="btn week-btn" id="prev-week">← Tuần trước</button>
+                <span class="week-label" id="week-label">Tuần hiện tại</span>
+                <button class="btn week-btn" id="next-week">Tuần sau →</button>
+            </div>
+            
+            <div id="schedule-loading" class="schedule-loading hidden">Đang tải lịch làm việc...</div>
+            
+            <div class="table-container">
+                <table class="modern-table schedule-table">
+                    <thead>
+                        <tr>
+                            <th>Thứ</th>
+                            <th>Ngày</th>
+                            <th>Ca / Vị trí</th>
+                        </tr>
+                    </thead>
+                    <tbody id="schedule-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Đi trễ / Off đột xuất -->
+        <div class="tab-content" id="tab-discipline">
+            <div id="discipline-loading" class="schedule-loading hidden">Đang tải dữ liệu...</div>
+            
+            <div class="discipline-cards">
+                <div class="disc-card late-card">
+                    <div class="disc-icon">⏰</div>
+                    <div class="disc-count" id="late-count">0</div>
+                    <div class="disc-label">Lần đi trễ</div>
+                    <div class="disc-warning" id="late-warning"></div>
+                </div>
+                <div class="disc-card off-card">
+                    <div class="disc-icon">🚫</div>
+                    <div class="disc-count" id="off-count">0</div>
+                    <div class="disc-label">Lần off đột xuất</div>
+                    <div class="disc-warning" id="off-warning"></div>
+                </div>
+            </div>
+
+            <h3 class="section-title">⏰ Chi tiết Đi trễ</h3>
+            <div class="table-container">
+                <table class="modern-table">
+                    <thead>
+                        <tr>
+                            <th>Thời gian</th>
+                            <th>Lý do</th>
+                        </tr>
+                    </thead>
+                    <tbody id="late-body"></tbody>
+                </table>
+            </div>
+
+            <h3 class="section-title">🚫 Chi tiết Off đột xuất</h3>
+            <div class="table-container">
+                <table class="modern-table">
+                    <thead>
+                        <tr>
+                            <th>Thời gian</th>
+                            <th>Lý do</th>
+                        </tr>
+                    </thead>
+                    <tbody id="off-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js?v=17"></script>
+</body>
+</html>
