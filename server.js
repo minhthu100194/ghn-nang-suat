@@ -421,68 +421,85 @@ app.post('/api/admin/summary', async (req, res) => {
     }
 
     try {
-        // Load and cache parsed records from DB if not cached
+        // Xử lý từng đợt 5000 dòng để tránh hết RAM
         if (!adminCache) {
-            const result = await pool.query('SELECT emp_id, data FROM records');
-            adminCache = result.rows.map(r => {
-                const obj = JSON.parse(r.data);
-                const keys = Object.keys(obj);
+            console.log('[Admin] Building cache from DB in chunks...');
+            const empMap = {};
+            const allDepartments = new Set();
+            const allShifts = new Set();
+            let columnKeys = null;
 
-                const find = (...patterns) =>
-                    keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
+            const CHUNK = 5000;
+            let offset = 0;
+            let hasMore = true;
 
-                const deptKey   = find('bộ phận');
-                const shiftKey  = find('ca làm');
-                const nameKey   = find('nhân viên', 'họ tên', 'tên');
-                const qtyKey    = find('sản lượng', 'stop', 'số lượng');
-                const salaryKey = find('thu nhập');
-                const dateKey   = find('ngày', 'date');
+            while (hasMore) {
+                const result = await pool.query('SELECT emp_id, data FROM records ORDER BY id LIMIT $1 OFFSET $2', [CHUNK, offset]);
+                if (result.rows.length < CHUNK) hasMore = false;
 
-                const parseNum = (val) => parseFloat(String(val || '0').replace(/,/g, '')) || 0;
+                for (const r of result.rows) {
+                    const obj = JSON.parse(r.data);
 
-                return {
-                    empId:  r.emp_id,
-                    name:   nameKey ? obj[nameKey] : r.emp_id,
-                    dept:   deptKey ? String(obj[deptKey]).trim() : '',
-                    shift:  shiftKey ? String(obj[shiftKey]).trim() : '',
-                    qty:    qtyKey ? parseNum(obj[qtyKey]) : 0,
-                    salary: salaryKey ? parseNum(obj[salaryKey]) : 0,
-                    date:   dateKey ? String(obj[dateKey]).trim() : ''
-                };
-            });
-            console.log(`[Admin] Cached ${adminCache.length} parsed records`);
-        }
+                    // Discover column names once
+                    if (!columnKeys) {
+                        const keys = Object.keys(obj);
+                        const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
+                        columnKeys = {
+                            dept: find('bộ phận'),
+                            shift: find('ca làm'),
+                            name: find('nhân viên', 'họ tên', 'tên'),
+                            qty: find('sản lượng', 'stop', 'số lượng'),
+                            salary: find('thu nhập'),
+                            date: find('ngày', 'date')
+                        };
+                    }
 
-        // Filter and aggregate
-        const empMap = {};
-        const allDepartments = new Set();
-        const allShifts = new Set();
+                    const parseNum = (val) => parseFloat(String(val || '0').replace(/,/g, '')) || 0;
+                    const dept = columnKeys.dept ? String(obj[columnKeys.dept] || '').trim() : '';
+                    const shiftVal = columnKeys.shift ? String(obj[columnKeys.shift] || '').trim() : '';
 
-        for (const rec of adminCache) {
-            if (rec.dept) allDepartments.add(rec.dept);
-            if (rec.shift) allShifts.add(rec.shift);
+                    if (dept) allDepartments.add(dept);
+                    if (shiftVal) allShifts.add(shiftVal);
 
-            // Apply filters
-            if (department && department !== 'all' && rec.dept !== department) continue;
-            if (shift && shift !== 'all' && rec.shift !== shift) continue;
+                    const empId = r.emp_id;
+                    if (!empMap[empId]) {
+                        empMap[empId] = {
+                            id: empId,
+                            name: columnKeys.name ? (obj[columnKeys.name] || empId) : empId,
+                            dept,
+                            shift: shiftVal,
+                            totalQty: 0,
+                            totalSalary: 0,
+                            days: new Set()
+                        };
+                    }
 
-            if (!empMap[rec.empId]) {
-                empMap[rec.empId] = {
-                    id: rec.empId,
-                    name: rec.name,
-                    totalQty: 0,
-                    totalSalary: 0,
-                    days: new Set()
-                };
+                    empMap[empId].totalQty += columnKeys.qty ? parseNum(obj[columnKeys.qty]) : 0;
+                    empMap[empId].totalSalary += columnKeys.salary ? parseNum(obj[columnKeys.salary]) : 0;
+                    const dateVal = columnKeys.date ? String(obj[columnKeys.date] || '').trim() : '';
+                    if (dateVal) empMap[empId].days.add(dateVal);
+                }
+
+                offset += CHUNK;
             }
 
-            empMap[rec.empId].totalQty += rec.qty;
-            empMap[rec.empId].totalSalary += rec.salary;
-            if (rec.date) empMap[rec.empId].days.add(rec.date);
+            // Convert Sets to sizes and cache
+            adminCache = {
+                empMap,
+                departments: Array.from(allDepartments).sort(),
+                shifts: Array.from(allShifts).sort()
+            };
+            console.log(`[Admin] Cached ${Object.keys(empMap).length} unique employees`);
         }
 
-        // Build sorted employee array
+        // Filter and respond
+        const { empMap, departments, shifts: shiftsList } = adminCache;
         const employees = Object.values(empMap)
+            .filter(e => {
+                if (department && department !== 'all' && e.dept !== department) return false;
+                if (shift && shift !== 'all' && e.shift !== shift) return false;
+                return true;
+            })
             .map(e => ({
                 id: e.id,
                 name: e.name,
@@ -504,8 +521,8 @@ app.post('/api/admin/summary', async (req, res) => {
             avgProduction,
             totalSalary,
             employees,
-            departments: Array.from(allDepartments).sort(),
-            shifts: Array.from(allShifts).sort()
+            departments,
+            shifts: shiftsList
         });
     } catch (err) {
         console.error('Admin summary error:', err);
