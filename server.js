@@ -423,18 +423,20 @@ async function buildAdminCache() {
     let columnKeys = null;
 
     const CHUNK = 5000;
-    let offset = 0;
+    let lastId = 0;
     let hasMore = true;
     let totalProcessed = 0;
 
     while (hasMore) {
         const result = await pool.query(
-            'SELECT emp_id, data FROM records ORDER BY id LIMIT $1 OFFSET $2',
-            [CHUNK, offset]
+            'SELECT id, emp_id, data FROM records WHERE id > $1 ORDER BY id ASC LIMIT $2',
+            [lastId, CHUNK]
         );
         if (result.rows.length < CHUNK) hasMore = false;
+        if (result.rows.length === 0) break;
 
         for (const r of result.rows) {
+            lastId = r.id;
             const obj = JSON.parse(r.data);
 
             if (!columnKeys) {
@@ -475,10 +477,14 @@ async function buildAdminCache() {
         }
 
         totalProcessed += result.rows.length;
-        offset += CHUNK;
+        
+        // Force garbage collection to prevent OOM on 512MB RAM limit
+        if (global.gc) {
+            global.gc();
+        }
         
         // Cho event loop nghỉ giữa các đợt
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 20));
     }
 
     adminCache = {
