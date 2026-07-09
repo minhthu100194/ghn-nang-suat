@@ -413,6 +413,112 @@ app.get('/api/discipline', async (req, res) => {
 
 // ─── API 6: Admin Summary Dashboard ─────────────────────────────────────────
 
+let adminBuildStatus = 'idle'; // idle | building | ready | error
+
+async function buildAdminCache() {
+    console.log('[Admin] Building cache in background...');
+    const empMap = {};
+    const allDepartments = new Set();
+    const allShifts = new Set();
+    let columnKeys = null;
+
+    const CHUNK = 5000;
+    let offset = 0;
+    let hasMore = true;
+    let totalProcessed = 0;
+
+    while (hasMore) {
+        const result = await pool.query(
+            'SELECT emp_id, data FROM records ORDER BY id LIMIT $1 OFFSET $2',
+            [CHUNK, offset]
+        );
+        if (result.rows.length < CHUNK) hasMore = false;
+
+        for (const r of result.rows) {
+            const obj = JSON.parse(r.data);
+
+            if (!columnKeys) {
+                const keys = Object.keys(obj);
+                const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
+                columnKeys = {
+                    dept: find('bộ phận'),
+                    shift: find('ca làm'),
+                    name: find('nhân viên', 'họ tên', 'tên'),
+                    qty: find('sản lượng', 'stop', 'số lượng'),
+                    salary: find('thu nhập'),
+                    date: find('ngày', 'date')
+                };
+            }
+
+            const parseNum = (val) => parseFloat(String(val || '0').replace(/,/g, '')) || 0;
+            const dept = columnKeys.dept ? String(obj[columnKeys.dept] || '').trim() : '';
+            const shiftVal = columnKeys.shift ? String(obj[columnKeys.shift] || '').trim() : '';
+
+            if (dept) allDepartments.add(dept);
+            if (shiftVal) allShifts.add(shiftVal);
+
+            const empId = r.emp_id;
+            if (!empMap[empId]) {
+                empMap[empId] = {
+                    id: empId,
+                    name: columnKeys.name ? (obj[columnKeys.name] || empId) : empId,
+                    dept, shift: shiftVal,
+                    totalQty: 0, totalSalary: 0,
+                    days: new Set()
+                };
+            }
+
+            empMap[empId].totalQty += columnKeys.qty ? parseNum(obj[columnKeys.qty]) : 0;
+            empMap[empId].totalSalary += columnKeys.salary ? parseNum(obj[columnKeys.salary]) : 0;
+            const dateVal = columnKeys.date ? String(obj[columnKeys.date] || '').trim() : '';
+            if (dateVal) empMap[empId].days.add(dateVal);
+        }
+
+        totalProcessed += result.rows.length;
+        offset += CHUNK;
+        
+        // Cho event loop nghỉ giữa các đợt
+        await new Promise(r => setTimeout(r, 50));
+    }
+
+    adminCache = {
+        empMap,
+        departments: Array.from(allDepartments).sort(),
+        shifts: Array.from(allShifts).sort()
+    };
+    console.log(`[Admin] Cache ready: ${Object.keys(empMap).length} employees from ${totalProcessed} records`);
+}
+
+function getFilteredResponse(department, shift) {
+    const { empMap, departments, shifts: shiftsList } = adminCache;
+    const employees = Object.values(empMap)
+        .filter(e => {
+            if (department && department !== 'all' && e.dept !== department) return false;
+            if (shift && shift !== 'all' && e.shift !== shift) return false;
+            return true;
+        })
+        .map(e => ({
+            id: e.id, name: e.name,
+            totalQty: e.totalQty, salary: e.totalSalary,
+            days: e.days.size
+        }))
+        .sort((a, b) => b.totalQty - a.totalQty);
+
+    const totalEmployees = employees.length;
+    const totalProduction = employees.reduce((sum, e) => sum + e.totalQty, 0);
+
+    return {
+        success: true,
+        totalEmployees,
+        totalProduction,
+        avgProduction: totalEmployees > 0 ? Math.round(totalProduction / totalEmployees) : 0,
+        totalSalary: employees.reduce((sum, e) => sum + e.salary, 0),
+        employees,
+        departments,
+        shifts: shiftsList
+    };
+}
+
 app.post('/api/admin/summary', async (req, res) => {
     const { password, department, shift } = req.body;
 
@@ -420,114 +526,26 @@ app.post('/api/admin/summary', async (req, res) => {
         return res.status(401).json({ success: false, message: 'Sai mật khẩu Admin' });
     }
 
-    try {
-        // Xử lý từng đợt 5000 dòng để tránh hết RAM
-        if (!adminCache) {
-            console.log('[Admin] Building cache from DB in chunks...');
-            const empMap = {};
-            const allDepartments = new Set();
-            const allShifts = new Set();
-            let columnKeys = null;
-
-            const CHUNK = 5000;
-            let offset = 0;
-            let hasMore = true;
-
-            while (hasMore) {
-                const result = await pool.query('SELECT emp_id, data FROM records ORDER BY id LIMIT $1 OFFSET $2', [CHUNK, offset]);
-                if (result.rows.length < CHUNK) hasMore = false;
-
-                for (const r of result.rows) {
-                    const obj = JSON.parse(r.data);
-
-                    // Discover column names once
-                    if (!columnKeys) {
-                        const keys = Object.keys(obj);
-                        const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
-                        columnKeys = {
-                            dept: find('bộ phận'),
-                            shift: find('ca làm'),
-                            name: find('nhân viên', 'họ tên', 'tên'),
-                            qty: find('sản lượng', 'stop', 'số lượng'),
-                            salary: find('thu nhập'),
-                            date: find('ngày', 'date')
-                        };
-                    }
-
-                    const parseNum = (val) => parseFloat(String(val || '0').replace(/,/g, '')) || 0;
-                    const dept = columnKeys.dept ? String(obj[columnKeys.dept] || '').trim() : '';
-                    const shiftVal = columnKeys.shift ? String(obj[columnKeys.shift] || '').trim() : '';
-
-                    if (dept) allDepartments.add(dept);
-                    if (shiftVal) allShifts.add(shiftVal);
-
-                    const empId = r.emp_id;
-                    if (!empMap[empId]) {
-                        empMap[empId] = {
-                            id: empId,
-                            name: columnKeys.name ? (obj[columnKeys.name] || empId) : empId,
-                            dept,
-                            shift: shiftVal,
-                            totalQty: 0,
-                            totalSalary: 0,
-                            days: new Set()
-                        };
-                    }
-
-                    empMap[empId].totalQty += columnKeys.qty ? parseNum(obj[columnKeys.qty]) : 0;
-                    empMap[empId].totalSalary += columnKeys.salary ? parseNum(obj[columnKeys.salary]) : 0;
-                    const dateVal = columnKeys.date ? String(obj[columnKeys.date] || '').trim() : '';
-                    if (dateVal) empMap[empId].days.add(dateVal);
-                }
-
-                offset += CHUNK;
-            }
-
-            // Convert Sets to sizes and cache
-            adminCache = {
-                empMap,
-                departments: Array.from(allDepartments).sort(),
-                shifts: Array.from(allShifts).sort()
-            };
-            console.log(`[Admin] Cached ${Object.keys(empMap).length} unique employees`);
-        }
-
-        // Filter and respond
-        const { empMap, departments, shifts: shiftsList } = adminCache;
-        const employees = Object.values(empMap)
-            .filter(e => {
-                if (department && department !== 'all' && e.dept !== department) return false;
-                if (shift && shift !== 'all' && e.shift !== shift) return false;
-                return true;
-            })
-            .map(e => ({
-                id: e.id,
-                name: e.name,
-                totalQty: e.totalQty,
-                salary: e.totalSalary,
-                days: e.days.size
-            }))
-            .sort((a, b) => b.totalQty - a.totalQty);
-
-        const totalEmployees = employees.length;
-        const totalProduction = employees.reduce((sum, e) => sum + e.totalQty, 0);
-        const avgProduction = totalEmployees > 0 ? Math.round(totalProduction / totalEmployees) : 0;
-        const totalSalary = employees.reduce((sum, e) => sum + e.salary, 0);
-
-        res.json({
-            success: true,
-            totalEmployees,
-            totalProduction,
-            avgProduction,
-            totalSalary,
-            employees,
-            departments,
-            shifts: shiftsList
-        });
-    } catch (err) {
-        console.error('Admin summary error:', err);
-        res.status(500).json({ success: false, message: 'Lỗi CSDL' });
+    // Cache đã sẵn sàng → trả kết quả ngay
+    if (adminCache) {
+        return res.json(getFilteredResponse(department, shift));
     }
+
+    // Đang build → báo client đợi
+    if (adminBuildStatus === 'building') {
+        return res.json({ success: true, loading: true, message: 'Đang tải dữ liệu... vui lòng đợi' });
+    }
+
+    // Lần đầu → bắt đầu build ngầm, trả lời ngay
+    adminBuildStatus = 'building';
+    res.json({ success: true, loading: true, message: 'Đang tải dữ liệu lần đầu...' });
+
+    buildAdminCache().then(() => {
+        adminBuildStatus = 'ready';
+    }).catch(err => {
+        console.error('[Admin] Cache build error:', err);
+        adminBuildStatus = 'error';
+    });
 });
 
 // ─── Start Server ────────────────────────────────────────────────────────────

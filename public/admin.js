@@ -63,6 +63,16 @@ async function fetchDashboardData() {
         });
         const data = await res.json();
         
+        if (data.success && data.loading) {
+            // Server đang xử lý dữ liệu, tự retry sau 5 giây
+            document.getElementById('stat-total').textContent = '⏳';
+            document.getElementById('stat-production').textContent = 'Đang tải...';
+            document.getElementById('stat-avg').textContent = '...';
+            document.getElementById('stat-salary').textContent = '...';
+            setTimeout(() => fetchDashboardData(), 5000);
+            return;
+        }
+        
         if (data.success) {
             renderDashboard(data);
         } else {
