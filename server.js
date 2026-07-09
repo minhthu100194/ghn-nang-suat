@@ -415,76 +415,82 @@ app.get('/api/discipline', async (req, res) => {
 let adminBuildStatus = 'idle'; // idle | building | ready | error
 
 async function buildAdminCache() {
-    console.log('[Admin] Building cache in background...');
+    console.log('[Admin] Building cache purely in PostgreSQL...');
+    
+    // 1. Lấy 1 dòng bất kỳ để tìm ra các key JSON chính xác
+    const sample = await pool.query('SELECT data FROM records LIMIT 1');
+    if (sample.rows.length === 0) {
+        adminCache = { empMap: {}, departments: [], shifts: [] };
+        console.log('[Admin] Cache ready: 0 records.');
+        return;
+    }
+    
+    const obj = JSON.parse(sample.rows[0].data);
+    const keys = Object.keys(obj);
+    const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
+    
+    const kDept = find('bộ phận');
+    const kShift = find('ca làm');
+    const kName = find('nhân viên', 'họ tên', 'tên');
+    const kQty = find('sản lượng', 'stop', 'số lượng');
+    const kSalary = find('thu nhập');
+    const kDate = find('ngày', 'date');
+
+    // 2. Viết câu SQL aggregation động dựa trên các key tìm được
+    const jsonField = (key) => key ? `data::json->>'${key.replace(/'/g, "''")}'` : `''`;
+    
+    // An toàn chuyển chuỗi có dấu phẩy thành số, bỏ qua ký tự lạ
+    const safeNum = (key) => key ? `CAST(NULLIF(REGEXP_REPLACE(${jsonField(key)}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)` : `0`;
+
+    const query = `
+        SELECT
+            emp_id,
+            MAX(COALESCE(${jsonField(kName)}, emp_id)) as name,
+            COALESCE(${jsonField(kDept)}, '') as dept,
+            COALESCE(${jsonField(kShift)}, '') as shift,
+            SUM(COALESCE(${safeNum(kQty)}, 0)) as qty,
+            SUM(COALESCE(${safeNum(kSalary)}, 0)) as salary,
+            COUNT(DISTINCT NULLIF(TRIM(COALESCE(${jsonField(kDate)}, '')), '')) as days
+        FROM records
+        GROUP BY 
+            emp_id, 
+            COALESCE(${jsonField(kDept)}, ''), 
+            COALESCE(${jsonField(kShift)}, '')
+    `;
+
+    // 3. Thực thi query duy nhất một lần. Postgres làm tất cả.
+    console.log('[Admin] Executing heavy SQL aggregation...');
+    const result = await pool.query(query);
+
+    // 4. Định dạng lại thành cấu trúc empMap như cũ
     const empMap = {};
     const allDepartments = new Set();
     const allShifts = new Set();
-    let columnKeys = null;
-
-    const CHUNK = 1000;
-    let lastId = 0;
-    let hasMore = true;
-    let totalProcessed = 0;
-
-    while (hasMore) {
-        const result = await pool.query(
-            'SELECT id, emp_id, data FROM records WHERE id > $1 ORDER BY id ASC LIMIT $2',
-            [lastId, CHUNK]
-        );
-        if (result.rows.length < CHUNK) hasMore = false;
-        if (result.rows.length === 0) break;
-
-        for (const r of result.rows) {
-            lastId = r.id;
-            const obj = JSON.parse(r.data);
-
-            if (!columnKeys) {
-                const keys = Object.keys(obj);
-                const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
-                columnKeys = {
-                    dept: find('bộ phận'),
-                    shift: find('ca làm'),
-                    name: find('nhân viên', 'họ tên', 'tên'),
-                    qty: find('sản lượng', 'stop', 'số lượng'),
-                    salary: find('thu nhập'),
-                    date: find('ngày', 'date')
-                };
-            }
-
-            const parseNum = (val) => parseFloat(String(val || '0').replace(/,/g, '')) || 0;
-            const dept = columnKeys.dept ? String(obj[columnKeys.dept] || '').trim() : '';
-            const shiftVal = columnKeys.shift ? String(obj[columnKeys.shift] || '').trim() : '';
-
-            if (dept) allDepartments.add(dept);
-            if (shiftVal) allShifts.add(shiftVal);
-
-            const empId = r.emp_id;
-            if (!empMap[empId]) {
-                empMap[empId] = {
-                    id: empId,
-                    name: columnKeys.name ? (obj[columnKeys.name] || empId) : empId,
-                    dept, shift: shiftVal,
-                    totalQty: 0, totalSalary: 0,
-                    days: new Set()
-                };
-            }
-
-            empMap[empId].totalQty += columnKeys.qty ? parseNum(obj[columnKeys.qty]) : 0;
-            empMap[empId].totalSalary += columnKeys.salary ? parseNum(obj[columnKeys.salary]) : 0;
-            const dateVal = columnKeys.date ? String(obj[columnKeys.date] || '').trim() : '';
-            if (dateVal) empMap[empId].days.add(dateVal);
-        }
-
-        totalProcessed += result.rows.length;
-        console.log(`[Admin] Processed ${totalProcessed} records...`);
+    
+    for (const r of result.rows) {
+        const empId = r.emp_id;
+        const dept = r.dept.trim();
+        const shiftVal = r.shift.trim();
         
-        // Force garbage collection to prevent OOM on 512MB RAM limit
-        if (global.gc) {
-            global.gc();
+        if (dept) allDepartments.add(dept);
+        if (shiftVal) allShifts.add(shiftVal);
+
+        if (!empMap[empId]) {
+            empMap[empId] = {
+                id: empId,
+                name: r.name,
+                dept: dept,
+                shift: shiftVal,
+                totalQty: 0, 
+                totalSalary: 0,
+                daysCount: 0 // Ta lưu trực tiếp số ngày thay vì dùng Set
+            };
         }
         
-        // Cho event loop nghỉ nhiều hơn để Render health check không bị timeout
-        await new Promise(r => setTimeout(r, 100));
+        // Vì group by đã tách theo dept và shift, ta cộng dồn nếu 1 người có nhiều dòng (đổi ca)
+        empMap[empId].totalQty += parseFloat(r.qty) || 0;
+        empMap[empId].totalSalary += parseFloat(r.salary) || 0;
+        empMap[empId].daysCount += parseInt(r.days, 10) || 0;
     }
 
     adminCache = {
@@ -492,7 +498,8 @@ async function buildAdminCache() {
         departments: Array.from(allDepartments).sort(),
         shifts: Array.from(allShifts).sort()
     };
-    console.log(`[Admin] Cache ready: ${Object.keys(empMap).length} employees from ${totalProcessed} records`);
+    
+    console.log(`[Admin] Cache ready: ${Object.keys(empMap).length} employees aggregated.`);
 }
 
 function getFilteredResponse(department, shift) {
@@ -506,7 +513,7 @@ function getFilteredResponse(department, shift) {
         .map(e => ({
             id: e.id, name: e.name,
             totalQty: e.totalQty, salary: e.totalSalary,
-            days: e.days.size
+            days: e.daysCount
         }))
         .sort((a, b) => b.totalQty - a.totalQty);
 
