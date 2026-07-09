@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const multer = require('multer');
 const { Pool } = require('pg');
 
 // ─── App & Database Setup ────────────────────────────────────────────────────
