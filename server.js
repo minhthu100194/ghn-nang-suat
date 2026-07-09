@@ -421,7 +421,7 @@ async function buildAdminCache() {
     const allShifts = new Set();
     let columnKeys = null;
 
-    const CHUNK = 5000;
+    const CHUNK = 1000;
     let lastId = 0;
     let hasMore = true;
     let totalProcessed = 0;
@@ -476,14 +476,15 @@ async function buildAdminCache() {
         }
 
         totalProcessed += result.rows.length;
+        console.log(`[Admin] Processed ${totalProcessed} records...`);
         
         // Force garbage collection to prevent OOM on 512MB RAM limit
         if (global.gc) {
             global.gc();
         }
         
-        // Cho event loop nghỉ giữa các đợt
-        await new Promise(r => setTimeout(r, 20));
+        // Cho event loop nghỉ nhiều hơn để Render health check không bị timeout
+        await new Promise(r => setTimeout(r, 100));
     }
 
     adminCache = {
