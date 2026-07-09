@@ -456,6 +456,7 @@ async function buildAdminCache() {
             emp_id, 
             COALESCE(${jsonField(kDept)}, ''), 
             COALESCE(${jsonField(kShift)}, '')
+        LIMIT 50000
     `;
 
     // 3. Thực thi query duy nhất một lần. Postgres làm tất cả.
