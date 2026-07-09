@@ -320,7 +320,9 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
 
     for (let i = 0; i < totalBatches; i++) {
         const batch = records.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
-        const action = i === 0 ? 'start' : (i === totalBatches - 1 ? 'finish' : 'continue');
+        const isFirst = i === 0;
+        const isLast = i === totalBatches - 1;
+        const action = isLast ? 'finish' : (isFirst ? 'start' : 'continue');
         const progress = Math.round(((i + 1) / totalBatches) * 100);
         btnUpload.textContent = `Đang tải... ${progress}% (${i + 1}/${totalBatches})`;
 
@@ -350,15 +352,6 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
         }
     }
 
-    // Gửi tín hiệu hoàn tất nếu chỉ có 1 đợt
-    if (totalBatches === 1) {
-        await fetch('/api/upload-batch', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: adminPass, action: 'finish', rows: [] })
-        });
-    }
-
     uploadMsg.textContent = `✅ Tải lên thành công! ${successCount.toLocaleString('vi-VN')} bản ghi`;
     uploadMsg.className = 'upload-msg success';
     uploadMsg.classList.remove('hidden');
@@ -371,84 +364,4 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
 
     btnUpload.disabled = false;
     btnUpload.textContent = 'Tải lên';
-});
-
-// === GOOGLE DRIVE IMPORT ===
-document.getElementById('btn-import').addEventListener('click', async () => {
-    const urlInput = document.getElementById('drive-url');
-    const url = urlInput.value.trim();
-    const btnImport = document.getElementById('btn-import');
-    
-    if (!url) {
-        uploadMsg.textContent = 'Vui lòng dán link Google Drive';
-        uploadMsg.className = 'upload-msg error';
-        uploadMsg.classList.remove('hidden');
-        return;
-    }
-
-    btnImport.disabled = true;
-    btnImport.textContent = 'Đang gửi yêu cầu...';
-    uploadMsg.classList.add('hidden');
-
-    try {
-        const res = await fetch('/api/import-url', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: adminPass, url })
-        });
-        const data = await res.json();
-
-        if (!data.success) {
-            uploadMsg.textContent = data.message;
-            uploadMsg.className = 'upload-msg error';
-            uploadMsg.classList.remove('hidden');
-            btnImport.disabled = false;
-            btnImport.textContent = 'Import từ Google Drive';
-            return;
-        }
-
-        // Bắt đầu kiểm tra tiến trình mỗi 3 giây
-        uploadMsg.textContent = '⏳ Đang tải file từ Google Drive...';
-        uploadMsg.className = 'upload-msg success';
-        uploadMsg.classList.remove('hidden');
-
-        const pollInterval = setInterval(async () => {
-            try {
-                const statusRes = await fetch('/api/import-status');
-                const status = await statusRes.json();
-
-                btnImport.textContent = `Đang xử lý... ${status.progress}%`;
-                uploadMsg.textContent = status.message;
-
-                if (status.status === 'done') {
-                    clearInterval(pollInterval);
-                    uploadMsg.textContent = status.message;
-                    uploadMsg.className = 'upload-msg success';
-                    btnImport.disabled = false;
-                    btnImport.textContent = 'Import từ Google Drive';
-                    
-                    // Reload dashboard
-                    initialLoad = true;
-                    deptSelect.innerHTML = '<option value="all">Tất cả bộ phận</option>';
-                    shiftSelect.innerHTML = '<option value="all">Tất cả ca làm</option>';
-                    await fetchDashboardData();
-                } else if (status.status === 'error') {
-                    clearInterval(pollInterval);
-                    uploadMsg.textContent = status.message;
-                    uploadMsg.className = 'upload-msg error';
-                    btnImport.disabled = false;
-                    btnImport.textContent = 'Import từ Google Drive';
-                }
-            } catch (e) {
-                // Network error khi poll, tiếp tục thử
-            }
-        }, 3000);
-
-    } catch (err) {
-        uploadMsg.textContent = 'Lỗi kết nối. Thử lại!';
-        uploadMsg.className = 'upload-msg error';
-        uploadMsg.classList.remove('hidden');
-        btnImport.disabled = false;
-        btnImport.textContent = 'Import từ Google Drive';
-    }
 });
