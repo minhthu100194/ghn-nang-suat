@@ -13,6 +13,10 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
+pool.on('error', (err, client) => {
+    console.error('Unexpected error on idle client', err);
+});
+
 async function initDB() {
     try {
         await pool.query(`
