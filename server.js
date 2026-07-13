@@ -478,18 +478,28 @@ app.get('/api/discipline', async (req, res) => {
 let adminBuildStatus = 'idle'; // idle | building | ready | error
 
 async function buildAdminCache() {
-    console.log('[Admin] Building cache purely in PostgreSQL...');
+    console.log('[Admin] Building cache purely in Node.js...');
     
-    // 1. Lấy 1 dòng bất kỳ để tìm ra các key JSON chính xác
-    const sample = await pool.query('SELECT data FROM records LIMIT 1');
-    if (sample.rows.length === 0) {
+    const empMap = {};
+    const allDepartments = new Set();
+    const allShifts = new Set();
+    
+    console.log('[Admin] Fetching all records from DB...');
+    const result = await pool.query('SELECT data FROM records');
+    
+    if (result.rows.length === 0) {
         adminCache = { empMap: {}, departments: [], shifts: [] };
         console.log('[Admin] Cache ready: 0 records.');
         return;
     }
     
-    const obj = JSON.parse(sample.rows[0].data);
-    const keys = Object.keys(obj);
+    let obj0;
+    try {
+        obj0 = JSON.parse(result.rows[0].data);
+    } catch (e) {
+        obj0 = {};
+    }
+    const keys = Object.keys(obj0);
     const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
     
     const kDept = find('bộ phận');
@@ -499,62 +509,53 @@ async function buildAdminCache() {
     const kSalary = find('thu nhập');
     const kDate = find('ngày', 'date');
 
-    // 2. Viết câu SQL aggregation động dựa trên các key tìm được
-    const jsonField = (key) => key ? `data::json->>'${key.replace(/'/g, "''")}'` : `''`;
-    
-    // An toàn chuyển chuỗi có dấu phẩy thành số, bỏ qua ký tự lạ
-    const safeNum = (key) => key ? `CAST(NULLIF(REGEXP_REPLACE(${jsonField(key)}, '[^0-9.-]', '', 'g'), '') AS NUMERIC)` : `0`;
-
-    const query = `
-        SELECT
-            emp_id,
-            MAX(COALESCE(${jsonField(kName)}, emp_id)) as name,
-            COALESCE(${jsonField(kDept)}, '') as dept,
-            COALESCE(${jsonField(kShift)}, '') as shift,
-            SUM(COALESCE(${safeNum(kQty)}, 0)) as qty,
-            SUM(COALESCE(${safeNum(kSalary)}, 0)) as salary,
-            COUNT(DISTINCT NULLIF(TRIM(COALESCE(${jsonField(kDate)}, '')), '')) as days
-        FROM records
-        GROUP BY 
-            emp_id, 
-            COALESCE(${jsonField(kDept)}, ''), 
-            COALESCE(${jsonField(kShift)}, '')
-        LIMIT 50000
-    `;
-
-    // 3. Thực thi query duy nhất một lần. Postgres làm tất cả.
-    console.log('[Admin] Executing heavy SQL aggregation...');
-    const result = await pool.query(query);
-
-    // 4. Định dạng lại thành cấu trúc empMap như cũ
-    const empMap = {};
-    const allDepartments = new Set();
-    const allShifts = new Set();
+    console.log('[Admin] Aggregating in memory...');
     
     for (const r of result.rows) {
-        const empId = r.emp_id;
-        const dept = r.dept.trim();
-        const shiftVal = r.shift.trim();
-        
-        if (dept) allDepartments.add(dept);
-        if (shiftVal) allShifts.add(shiftVal);
+        try {
+            const obj = JSON.parse(r.data);
+            const empId = obj['ID nhân viên'] || obj['ID NV'] || obj['Mã NV'] || obj['Mã nhân viên'];
+            if (!empId) continue;
+            
+            const dept = (obj[kDept] || '').trim();
+            const shiftVal = (obj[kShift] || '').trim();
+            const name = (obj[kName] || empId).trim();
+            
+            let qty = 0;
+            if (obj[kQty]) qty = parseFloat(String(obj[kQty]).replace(/[^0-9.-]/g, '')) || 0;
+            
+            let salary = 0;
+            if (obj[kSalary]) salary = parseFloat(String(obj[kSalary]).replace(/[^0-9.-]/g, '')) || 0;
+            
+            const dateStr = (obj[kDate] || '').trim();
 
-        if (!empMap[empId]) {
-            empMap[empId] = {
-                id: empId,
-                name: r.name,
-                dept: dept,
-                shift: shiftVal,
-                totalQty: 0, 
-                totalSalary: 0,
-                daysCount: 0 // Ta lưu trực tiếp số ngày thay vì dùng Set
-            };
+            if (dept) allDepartments.add(dept);
+            if (shiftVal) allShifts.add(shiftVal);
+
+            if (!empMap[empId]) {
+                empMap[empId] = {
+                    id: empId,
+                    name: name,
+                    dept: dept,
+                    shift: shiftVal,
+                    totalQty: 0,
+                    totalSalary: 0,
+                    daysSet: new Set()
+                };
+            }
+
+            empMap[empId].totalQty += qty;
+            empMap[empId].totalSalary += salary;
+            if (dateStr) empMap[empId].daysSet.add(dateStr);
+            
+        } catch (e) {
+            // ignore bad json
         }
-        
-        // Vì group by đã tách theo dept và shift, ta cộng dồn nếu 1 người có nhiều dòng (đổi ca)
-        empMap[empId].totalQty += parseFloat(r.qty) || 0;
-        empMap[empId].totalSalary += parseFloat(r.salary) || 0;
-        empMap[empId].daysCount += parseInt(r.days, 10) || 0;
+    }
+
+    for (const empId in empMap) {
+        empMap[empId].daysCount = empMap[empId].daysSet.size;
+        delete empMap[empId].daysSet;
     }
 
     adminCache = {
