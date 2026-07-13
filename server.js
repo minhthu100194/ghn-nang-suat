@@ -484,10 +484,11 @@ async function buildAdminCache() {
     const allDepartments = new Set();
     const allShifts = new Set();
     
-    console.log('[Admin] Fetching all records from DB...');
-    const result = await pool.query('SELECT data FROM records');
+    console.log('[Admin] Fetching all records from DB in chunks...');
     
-    if (result.rows.length === 0) {
+    // Lấy 1 dòng để tìm key
+    const sample = await pool.query('SELECT data FROM records LIMIT 1');
+    if (sample.rows.length === 0) {
         adminCache = { empMap: {}, departments: [], shifts: [] };
         console.log('[Admin] Cache ready: 0 records.');
         return;
@@ -495,7 +496,7 @@ async function buildAdminCache() {
     
     let obj0;
     try {
-        obj0 = JSON.parse(result.rows[0].data);
+        obj0 = JSON.parse(sample.rows[0].data);
     } catch (e) {
         obj0 = {};
     }
@@ -509,48 +510,58 @@ async function buildAdminCache() {
     const kSalary = find('thu nhập');
     const kDate = find('ngày', 'date');
 
-    console.log('[Admin] Aggregating in memory...');
+    console.log('[Admin] Aggregating in memory by chunks...');
     
-    for (const r of result.rows) {
-        try {
-            const obj = JSON.parse(r.data);
-            const empId = obj['ID nhân viên'] || obj['ID NV'] || obj['Mã NV'] || obj['Mã nhân viên'];
-            if (!empId) continue;
-            
-            const dept = (obj[kDept] || '').trim();
-            const shiftVal = (obj[kShift] || '').trim();
-            const name = (obj[kName] || empId).trim();
-            
-            let qty = 0;
-            if (obj[kQty]) qty = parseFloat(String(obj[kQty]).replace(/[^0-9.-]/g, '')) || 0;
-            
-            let salary = 0;
-            if (obj[kSalary]) salary = parseFloat(String(obj[kSalary]).replace(/[^0-9.-]/g, '')) || 0;
-            
-            const dateStr = (obj[kDate] || '').trim();
+    let offset = 0;
+    const limit = 20000;
+    
+    while (true) {
+        const result = await pool.query(`SELECT data FROM records LIMIT ${limit} OFFSET ${offset}`);
+        if (result.rows.length === 0) break;
+        
+        for (const r of result.rows) {
+            try {
+                const obj = JSON.parse(r.data);
+                const empId = obj['ID nhân viên'] || obj['ID NV'] || obj['Mã NV'] || obj['Mã nhân viên'];
+                if (!empId) continue;
+                
+                const dept = (obj[kDept] || '').trim();
+                const shiftVal = (obj[kShift] || '').trim();
+                const name = (obj[kName] || empId).trim();
+                
+                let qty = 0;
+                if (obj[kQty]) qty = parseFloat(String(obj[kQty]).replace(/[^0-9.-]/g, '')) || 0;
+                
+                let salary = 0;
+                if (obj[kSalary]) salary = parseFloat(String(obj[kSalary]).replace(/[^0-9.-]/g, '')) || 0;
+                
+                const dateStr = (obj[kDate] || '').trim();
 
-            if (dept) allDepartments.add(dept);
-            if (shiftVal) allShifts.add(shiftVal);
+                if (dept) allDepartments.add(dept);
+                if (shiftVal) allShifts.add(shiftVal);
 
-            if (!empMap[empId]) {
-                empMap[empId] = {
-                    id: empId,
-                    name: name,
-                    dept: dept,
-                    shift: shiftVal,
-                    totalQty: 0,
-                    totalSalary: 0,
-                    daysSet: new Set()
-                };
+                if (!empMap[empId]) {
+                    empMap[empId] = {
+                        id: empId,
+                        name: name,
+                        dept: dept,
+                        shift: shiftVal,
+                        totalQty: 0,
+                        totalSalary: 0,
+                        daysSet: new Set()
+                    };
+                }
+
+                empMap[empId].totalQty += qty;
+                empMap[empId].totalSalary += salary;
+                if (dateStr) empMap[empId].daysSet.add(dateStr);
+                
+            } catch (e) {
+                // ignore bad json
             }
-
-            empMap[empId].totalQty += qty;
-            empMap[empId].totalSalary += salary;
-            if (dateStr) empMap[empId].daysSet.add(dateStr);
-            
-        } catch (e) {
-            // ignore bad json
         }
+        
+        offset += limit;
     }
 
     for (const empId in empMap) {
