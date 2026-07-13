@@ -21,7 +21,12 @@ async function initDB() {
                 emp_id TEXT,
                 cccd TEXT,
                 data TEXT
-            )
+            );
+            CREATE TABLE IF NOT EXISTS monthly_salary (
+                id SERIAL PRIMARY KEY,
+                emp_id TEXT,
+                data TEXT
+            );
         `);
         console.log('PostgreSQL: Table "records" ready');
     } catch (err) {
@@ -195,14 +200,19 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ success: false, message: 'Sai số Căn cước công dân (Mật khẩu)' });
         }
 
-        // Return records with CCCD/CMND fields stripped from data
-        const safeRecords = rows.map(r => {
-            const obj = JSON.parse(r.data);
-            const { CCCD, CMND, cccd: _removed, ...safe } = obj;
-            return safe;
-        });
+        // Fetch monthly salary data if exists
+        let salaryData = null;
+        try {
+            const salaryResult = await pool.query('SELECT data FROM monthly_salary WHERE emp_id = $1', [String(id)]);
+            if (salaryResult.rows.length > 0) {
+                // There should only be one salary row per employee per month, but we'll take the first
+                salaryData = JSON.parse(salaryResult.rows[0].data);
+            }
+        } catch (e) {
+            console.error('Error fetching monthly salary:', e);
+        }
 
-        res.json({ success: true, user: safeRecords });
+        res.json({ success: true, user: safeRecords, salaryData });
     } catch (err) {
         console.error('Login error:', err);
         res.status(500).json({ success: false, message: 'Lỗi truy vấn CSDL' });
@@ -258,6 +268,55 @@ app.post('/api/upload-batch', async (req, res) => {
     } catch (err) {
         console.error('Batch upload error:', err);
         res.status(500).json({ success: false, message: 'Lỗi lưu CSDL: ' + err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// ─── API 2b: Admin Salary Batch Upload ───────────────────────────────────────
+
+app.post('/api/upload-salary-batch', async (req, res) => {
+    const { password, action, rows } = req.body;
+
+    if (password !== 'admin123') {
+        return res.status(401).json({ success: false, message: 'Sai mật khẩu Admin' });
+    }
+
+    const client = await pool.connect();
+    try {
+        if (action === 'start') {
+            await client.query('DELETE FROM monthly_salary');
+            console.log('[Upload Salary] Started — old records deleted');
+        }
+
+        if (rows && rows.length > 0) {
+            const BATCH_SIZE = 100;
+            for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+                const batch = rows.slice(i, i + BATCH_SIZE);
+                const values = [];
+                const params = [];
+
+                batch.forEach((row, idx) => {
+                    const offset = idx * 2;
+                    values.push(`($${offset + 1}, $${offset + 2})`);
+                    params.push(row.emp_id, row.data);
+                });
+
+                await client.query(
+                    `INSERT INTO monthly_salary (emp_id, data) VALUES ${values.join(',')}`,
+                    params
+                );
+            }
+        }
+
+        if (action === 'finish') {
+            console.log('[Upload Salary] Finished');
+        }
+
+        res.json({ success: true, message: `Đã nhận ${(rows || []).length} bản ghi lương tháng` });
+    } catch (err) {
+        console.error('Salary batch upload error:', err);
+        res.status(500).json({ success: false, message: 'Lỗi lưu CSDL lương tháng: ' + err.message });
     } finally {
         client.release();
     }

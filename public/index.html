@@ -49,6 +49,7 @@
             <button class="tab-btn active" data-tab="tab-productivity">📊 Năng Suất</button>
             <button class="tab-btn" data-tab="tab-schedule">📅 Lịch</button>
             <button class="tab-btn" data-tab="tab-discipline">⚠️ Chấm Công</button>
+            <button class="tab-btn salary-tab-btn" data-tab="tab-salary">💰 Lương Tháng</button>
         </div>
 
         <!-- Tab: Năng Suất -->
@@ -158,8 +159,44 @@
                 </table>
             </div>
         </div>
+
+        <!-- Tab: Lương Tháng -->
+        <div class="tab-content" id="tab-salary">
+            <div id="salary-empty" class="schedule-loading hidden">Chưa có dữ liệu lương tháng này.</div>
+            <div id="salary-content" class="hidden">
+                <div class="stats-overview" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+                    <div class="stat-box" style="background: rgba(255, 152, 0, 0.1); border-left-color: #ff9800;">
+                        <h4>Thu nhập đảm bảo + Phụ cấp lễ</h4>
+                        <div class="value" id="salary-base">0</div>
+                    </div>
+                    <div class="stat-box" style="background: rgba(76, 175, 80, 0.1); border-left-color: #4CAF50;">
+                        <h4>Lương năng suất + Phụ cấp lễ</h4>
+                        <div class="value highlight-val" id="salary-prod">0</div>
+                    </div>
+                    <div class="stat-box" style="background: rgba(33, 150, 243, 0.1); border-left-color: #2196F3;">
+                        <h4>Tổng Chi Lương</h4>
+                        <div class="value" id="salary-total">0</div>
+                    </div>
+                </div>
+
+                <h3 class="section-title">📅 Chi tiết Lương Theo Ngày</h3>
+                <div class="table-container">
+                    <table class="modern-table schedule-table">
+                        <thead>
+                            <tr>
+                                <th>Ngày</th>
+                                <th>Số tiền</th>
+                            </tr>
+                        </thead>
+                        <tbody id="salary-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
     </div>
 
-    <script src="script.js?v=17"></script>
+    <script src="script.js?v=18"></script>
 </body>
 </html>

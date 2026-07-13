@@ -375,3 +375,146 @@ document.getElementById('upload-form').addEventListener('submit', async (e) => {
     btnUpload.disabled = false;
     btnUpload.textContent = 'Táº£i lÃªn';
 });
+
+// === UPLOAD SALARY (EXCEL) ===
+const dropZoneSalary = document.getElementById('drop-zone-salary');
+const fileInputSalary = document.getElementById('file-input-salary');
+const fileNameSalaryEl = document.getElementById('file-name-salary');
+const btnUploadSalary = document.getElementById('btn-upload-salary');
+const uploadMsgSalary = document.getElementById('upload-msg-salary');
+
+if (dropZoneSalary) {
+    dropZoneSalary.addEventListener('click', () => fileInputSalary.click());
+    dropZoneSalary.addEventListener('dragover', (e) => { e.preventDefault(); dropZoneSalary.classList.add('dragover'); });
+    dropZoneSalary.addEventListener('dragleave', () => dropZoneSalary.classList.remove('dragover'));
+    dropZoneSalary.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZoneSalary.classList.remove('dragover');
+        if (e.dataTransfer.files.length) {
+            fileInputSalary.files = e.dataTransfer.files;
+            showFileNameSalary(e.dataTransfer.files[0].name);
+        }
+    });
+
+    fileInputSalary.addEventListener('change', () => {
+        if (fileInputSalary.files.length) showFileNameSalary(fileInputSalary.files[0].name);
+    });
+
+    function showFileNameSalary(name) {
+        fileNameSalaryEl.textContent = '?? ' + name;
+        fileNameSalaryEl.classList.remove('hidden');
+        btnUploadSalary.disabled = false;
+    }
+
+    document.getElementById('upload-salary-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!fileInputSalary.files.length) return;
+
+        const file = fileInputSalary.files[0];
+        const password = sessionStorage.getItem('adminPass');
+
+        btnUploadSalary.disabled = true;
+        btnUploadSalary.textContent = 'Ðang d?c file Excel...';
+        uploadMsgSalary.className = 'upload-msg';
+        uploadMsgSalary.textContent = '';
+
+        try {
+            const data = await file.arrayBuffer();
+            const workbook = XLSX.read(data, { type: 'array' });
+            const sheetName = workbook.SheetNames.find(n => n.toLowerCase().includes('t?ng h?p luong')) || workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            
+            // L?y d? li?u d?ng m?ng d? tìm dòng tiêu d?
+            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+            let headerRowIndex = -1;
+            
+            for (let i = 0; i < Math.min(10, jsonData.length); i++) {
+                const row = jsonData[i];
+                if (row && row.includes('ID') && row.includes('Tên') && row.includes('Phòng ban')) {
+                    headerRowIndex = i;
+                    break;
+                }
+            }
+
+            if (headerRowIndex === -1) {
+                throw new Error('Không tìm th?y dòng tiêu d? (có c?t ID, Tên, Phòng ban) trong sheet ' + sheetName);
+            }
+
+            // Ð?c l?i t? dòng tiêu d?
+            const rows = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex });
+            
+            // Tìm c?t ID
+            const records = [];
+            rows.forEach(obj => {
+                const keys = Object.keys(obj);
+                const idKey = keys.find(k => ['id', 'mã nv', 'mã nhân viên', 'textid'].includes(k.toLowerCase()));
+                if (idKey && obj[idKey]) {
+                    records.push({
+                        emp_id: String(obj[idKey]).trim(),
+                        data: JSON.stringify(obj)
+                    });
+                }
+            });
+
+            if (records.length === 0) {
+                throw new Error('Không tìm th?y d? li?u h?p l?. C?n c?t ID/Mã NV.');
+            }
+
+            const BATCH_SIZE = 100;
+            const totalBatches = Math.ceil(records.length / BATCH_SIZE);
+
+            for (let i = 0; i < totalBatches; i++) {
+                const batch = records.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
+                let action = 'continue';
+                if (i === 0) action = 'start';
+                if (i === totalBatches - 1 && totalBatches > 1) action = 'finish';
+                if (totalBatches === 1) action = 'start'; // If only 1 batch, just start and it clears then inserts. Wait, we need finish to clear cache if any. 
+                // Actually, backend doesn't cache salary yet, but just in case. Let's send start, then finish in next request if needed, or if 1 batch just start and it's fine.
+
+                btnUploadSalary.textContent = \Ðang d?y lên server... \%\;
+
+                const res = await fetch('/api/upload-salary-batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password, action, rows: batch })
+                });
+
+                if (!res.ok) {
+                    const errorData = await res.json();
+                    throw new Error(errorData.message || 'L?i server');
+                }
+                
+                // if it's the only batch, we should also send a 'finish' action just to be safe
+                if (totalBatches === 1) {
+                    await fetch('/api/upload-salary-batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password, action: 'finish', rows: [] })
+                    });
+                }
+            }
+            
+            // if more than 1 batch, and we already sent start/continue, we need to send finish on the last batch.
+            // Wait, if i === totalBatches - 1, action is 'finish'. 
+            // The backend processes rows AND action. So if action='finish', it inserts rows AND clears cache. This is perfect.
+
+            uploadMsgSalary.textContent = \? T?i lên thành công! Ðã luu \ nhân viên.\;
+            uploadMsgSalary.classList.add('success');
+            uploadMsgSalary.classList.remove('hidden');
+            setTimeout(() => { uploadMsgSalary.classList.add('hidden'); }, 5000);
+
+            fileInputSalary.value = '';
+            fileNameSalaryEl.classList.add('hidden');
+            btnUploadSalary.textContent = 'T?i Luong Lên';
+
+        } catch (err) {
+            console.error(err);
+            uploadMsgSalary.textContent = '? L?i: ' + err.message;
+            uploadMsgSalary.classList.add('error');
+            uploadMsgSalary.classList.remove('hidden');
+            btnUploadSalary.disabled = false;
+            btnUploadSalary.textContent = 'T?i Luong Lên';
+        }
+    });
+}
+

@@ -7,6 +7,7 @@
     <link rel="icon" href="logo-ghn.png" type="image/png">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="admin.css">
 </head>
 <body>
@@ -93,7 +94,7 @@
                     <div class="chart-wrap"><canvas id="top-chart"></canvas></div>
                 </div>
                 <div class="card upload-card">
-                    <h3>📤 Upload Dữ Liệu</h3>
+                    <h3>📤 Upload Năng Suất (CSV)</h3>
                     <form id="upload-form">
                         <div class="upload-zone" id="drop-zone">
                             <div class="upload-icon">📁</div>
@@ -104,6 +105,20 @@
                         <button type="submit" class="btn-upload" id="btn-upload" disabled>Tải lên</button>
                     </form>
                     <div id="upload-msg" class="upload-msg hidden"></div>
+                </div>
+                
+                <div class="card upload-card" style="border-left: 4px solid var(--accent-orange);">
+                    <h3>💸 Upload Lương Tháng (Excel)</h3>
+                    <form id="upload-salary-form">
+                        <div class="upload-zone" id="drop-zone-salary">
+                            <div class="upload-icon">📊</div>
+                            <p>Kéo thả file Excel (.xlsx) Lương tháng vào đây</p>
+                            <input type="file" id="file-input-salary" accept=".xlsx, .xls" hidden>
+                        </div>
+                        <div id="file-name-salary" class="file-name hidden"></div>
+                        <button type="submit" class="btn-upload" id="btn-upload-salary" disabled style="background: var(--accent-orange);">Tải Lương Lên</button>
+                    </form>
+                    <div id="upload-msg-salary" class="upload-msg hidden"></div>
                 </div>
             </div>
 

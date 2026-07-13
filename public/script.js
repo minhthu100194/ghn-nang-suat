@@ -25,7 +25,7 @@ if (loginForm) {
             const data = await res.json();
 
             if (data.success) {
-                showDashboard(data.user);
+                showDashboard(data.user, data.salaryData);
             } else {
                 loginError.textContent = data.message;
                 loginError.classList.remove('hidden');
@@ -37,7 +37,7 @@ if (loginForm) {
     });
 }
 
-function showDashboard(records) {
+function showDashboard(records, salaryData) {
     loginContainer.classList.add('hidden');
     dashboardContainer.classList.remove('hidden');
 
@@ -234,7 +234,70 @@ function showDashboard(records) {
     loadSchedule(empIdVal);
     loadAttendance(empIdVal, dataMonth);
     loadDiscipline(empIdVal);
+
+    // === RENDER LƯƠNG THÁNG ===
+    renderSalary(salaryData);
 }
+
+// --- Render Lương tháng ---
+function renderSalary(salary) {
+    const emptyEl = document.getElementById('salary-empty');
+    const contentEl = document.getElementById('salary-content');
+    
+    if (!salary) {
+        emptyEl.classList.remove('hidden');
+        contentEl.classList.add('hidden');
+        return;
+    }
+    
+    emptyEl.classList.add('hidden');
+    contentEl.classList.remove('hidden');
+    
+    // Tìm keys
+    const keys = Object.keys(salary);
+    const findKey = (...patterns) => keys.find(k => patterns.some(p => String(k).toLowerCase().includes(p)));
+    
+    const kBase = findKey('thu nhập lương đảm bảo');
+    const kProd = findKey('lương năng suất');
+    const kTotal = findKey('chi lương');
+    
+    document.getElementById('salary-base').textContent = formatCurrency(parseFloat(salary[kBase]) || 0);
+    document.getElementById('salary-prod').textContent = formatCurrency(parseFloat(salary[kProd]) || 0);
+    document.getElementById('salary-total').textContent = formatCurrency(parseFloat(salary[kTotal]) || 0);
+    
+    // Tìm các cột ngày (tên cột là số như 46204)
+    // Excel date = số ngày từ 1/1/1900
+    const parseExcelDate = (serial) => {
+        const utc_days = Math.floor(serial - 25569);
+        const utc_value = utc_days * 86400;
+        const date_info = new Date(utc_value * 1000);
+        return date_info.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    };
+
+    const tbody = document.getElementById('salary-body');
+    tbody.innerHTML = '';
+    
+    let hasDays = false;
+    keys.forEach(k => {
+        if (!isNaN(k) && parseInt(k) > 40000) { // Cột ngày Excel
+            const val = parseFloat(salary[k]) || 0;
+            if (val > 0) {
+                hasDays = true;
+                const tr = document.createElement('tr');
+                tr.innerHTML = \`
+                    <td>\${parseExcelDate(k)}</td>
+                    <td class="qty-val">\${formatCurrency(val)}</td>
+                \`;
+                tbody.appendChild(tr);
+            }
+        }
+    });
+
+    if (!hasDays) {
+        tbody.innerHTML = '<tr><td colspan="2" style="text-align: center;">Không có chi tiết từng ngày</td></tr>';
+    }
+}
+
 
 // --- Load đi trễ / off đột xuất ---
 async function loadDiscipline(empId) {
