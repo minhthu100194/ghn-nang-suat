@@ -31,9 +31,14 @@ async function initDB() {
                 emp_id TEXT,
                 data TEXT
             );
-            CREATE INDEX IF NOT EXISTS idx_records_emp_id ON records(emp_id);
-            CREATE INDEX IF NOT EXISTS idx_salary_emp_id ON monthly_salary(emp_id);
+            CREATE TABLE IF NOT EXISTS admin_cache (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                summary TEXT
+            );
         `);
+        // Create indexes separately to avoid issues
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_records_emp_id ON records(emp_id)').catch(() => {});
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_salary_emp_id ON monthly_salary(emp_id)').catch(() => {});
         console.log('PostgreSQL: Tables & indexes ready');
     } catch (err) {
         console.error('PostgreSQL init error:', err);
@@ -227,6 +232,9 @@ app.post('/api/login', async (req, res) => {
 
 // ─── API 2: Admin Batch Upload ───────────────────────────────────────────────
 
+// In-memory accumulator for building admin summary during upload
+let uploadAccumulator = null;
+
 app.post('/api/upload-batch', async (req, res) => {
     const { password, action, rows } = req.body;
 
@@ -236,14 +244,15 @@ app.post('/api/upload-batch', async (req, res) => {
 
     const client = await pool.connect();
     try {
-        // On 'start': wipe old data and clear admin cache
+        // On 'start': wipe old data and init accumulator
         if (action === 'start') {
             await client.query('DELETE FROM records');
             adminCache = null;
+            uploadAccumulator = { empMap: {}, departments: new Set(), shifts: new Set(), keysDone: false };
             console.log('[Upload] Started — old records deleted');
         }
 
-        // Insert rows in batches of 100 using multi-value INSERT
+        // Insert rows and accumulate summary
         if (rows && rows.length > 0) {
             const BATCH_SIZE = 100;
             for (let i = 0; i < rows.length; i += BATCH_SIZE) {
@@ -262,12 +271,72 @@ app.post('/api/upload-batch', async (req, res) => {
                     params
                 );
             }
+
+            // Accumulate admin summary from upload data (already in memory!)
+            if (uploadAccumulator && rows.length > 0) {
+                // Detect keys from first row if not done yet
+                if (!uploadAccumulator.keysDone) {
+                    try {
+                        const obj0 = JSON.parse(rows[0].data);
+                        const keys = Object.keys(obj0);
+                        const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
+                        uploadAccumulator.kDept = find('bộ phận');
+                        uploadAccumulator.kShift = find('ca làm');
+                        uploadAccumulator.kName = find('nhân viên', 'họ tên', 'tên');
+                        uploadAccumulator.kQty = find('sản lượng', 'stop', 'số lượng');
+                        uploadAccumulator.kDate = find('ngày', 'date');
+                        uploadAccumulator.keysDone = true;
+                    } catch (e) {}
+                }
+
+                const { empMap, departments, shifts, kDept, kShift, kName, kQty, kDate } = uploadAccumulator;
+                for (const row of rows) {
+                    try {
+                        const obj = JSON.parse(row.data);
+                        const empId = row.emp_id;
+                        if (!empId) continue;
+
+                        const dept = (obj[kDept] || '').trim();
+                        const shiftVal = (obj[kShift] || '').trim();
+                        const name = (obj[kName] || empId).toString().trim();
+                        let qty = obj[kQty] ? parseFloat(String(obj[kQty]).replace(/[^0-9.-]/g, '')) || 0 : 0;
+                        const dateStr = (obj[kDate] || '').trim();
+
+                        if (dept) departments.add(dept);
+                        if (shiftVal) shifts.add(shiftVal);
+
+                        if (!empMap[empId]) {
+                            empMap[empId] = { id: empId, name, dept, shift: shiftVal, totalQty: 0, totalSalary: 0, daysSet: new Set() };
+                        }
+                        empMap[empId].totalQty += qty;
+                        if (dateStr) empMap[empId].daysSet.add(dateStr);
+                    } catch (e) {}
+                }
+            }
         }
 
-        // On 'finish': clear admin cache so next summary re-queries
-        if (action === 'finish') {
-            adminCache = null;
-            console.log('[Upload] Finished — admin cache cleared');
+        // On 'finish': save admin summary to database
+        if (action === 'finish' && uploadAccumulator) {
+            const { empMap, departments, shifts } = uploadAccumulator;
+            // Convert Sets to counts
+            for (const empId in empMap) {
+                empMap[empId].daysCount = empMap[empId].daysSet.size;
+                delete empMap[empId].daysSet;
+            }
+            const summaryObj = {
+                empMap,
+                departments: Array.from(departments).sort(),
+                shifts: Array.from(shifts).sort()
+            };
+            // Save to DB
+            await client.query(
+                `INSERT INTO admin_cache (id, summary) VALUES (1, $1)
+                 ON CONFLICT (id) DO UPDATE SET summary = $1`,
+                [JSON.stringify(summaryObj)]
+            );
+            adminCache = summaryObj;
+            uploadAccumulator = null;
+            console.log(`[Upload] Finished — admin summary saved (${Object.keys(empMap).length} employees)`);
         }
 
         res.json({ success: true, message: `Đã nhận ${(rows || []).length} bản ghi` });
@@ -475,103 +544,6 @@ app.get('/api/discipline', async (req, res) => {
     }
 });
 
-// ─── API 6: Admin Summary Dashboard ─────────────────────────────────────────
-
-let adminBuildStatus = 'idle'; // idle | building | ready | error
-
-async function buildAdminCache() {
-    console.log('[Admin] Building cache with ultra-lightweight SQL...');
-    
-    try {
-        // Step 1: Simple COUNT per employee — no JSON parsing, very fast
-        console.log('[Admin] Step 1: Counting records per employee...');
-        const countResult = await pool.query(
-            'SELECT emp_id, COUNT(*) as total FROM records GROUP BY emp_id'
-        );
-        
-        if (countResult.rows.length === 0) {
-            adminCache = { empMap: {}, departments: [], shifts: [] };
-            console.log('[Admin] Cache ready: 0 records.');
-            return;
-        }
-        
-        const empIds = countResult.rows.map(r => r.emp_id);
-        console.log(`[Admin] Found ${empIds.length} unique employees. Fetching metadata...`);
-        
-        // Step 2: Fetch ONE sample row per employee in small batches
-        // Each batch: WHERE emp_id = ANY($1) with subquery for min(id)
-        const sampleMap = {};
-        const BATCH = 30;
-        
-        for (let i = 0; i < empIds.length; i += BATCH) {
-            const batch = empIds.slice(i, i + BATCH);
-            const res = await pool.query(
-                `SELECT r.emp_id, r.data FROM records r
-                 INNER JOIN (
-                     SELECT emp_id, MIN(id) as mid FROM records 
-                     WHERE emp_id = ANY($1::text[]) GROUP BY emp_id
-                 ) s ON r.id = s.mid`,
-                [batch]
-            );
-            for (const row of res.rows) {
-                try {
-                    sampleMap[row.emp_id] = JSON.parse(row.data);
-                } catch (e) {
-                    sampleMap[row.emp_id] = {};
-                }
-            }
-        }
-        
-        // Find JSON keys from first sample
-        const firstSample = Object.values(sampleMap)[0] || {};
-        const keys = Object.keys(firstSample);
-        const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
-        
-        const kDept = find('bộ phận');
-        const kShift = find('ca làm');
-        const kName = find('nhân viên', 'họ tên', 'tên');
-        
-        // Step 3: Build empMap from count + sample data
-        const empMap = {};
-        const allDepartments = new Set();
-        const allShifts = new Set();
-        
-        for (const row of countResult.rows) {
-            const empId = row.emp_id;
-            const sample = sampleMap[empId] || {};
-            
-            const dept = (sample[kDept] || '').trim();
-            const shiftVal = (sample[kShift] || '').trim();
-            const name = (sample[kName] || empId).toString().trim();
-            
-            if (dept) allDepartments.add(dept);
-            if (shiftVal) allShifts.add(shiftVal);
-            
-            empMap[empId] = {
-                id: empId,
-                name: name,
-                dept: dept,
-                shift: shiftVal,
-                totalQty: parseInt(row.total) || 0,
-                totalSalary: 0,
-                daysCount: parseInt(row.total) || 0
-            };
-        }
-        
-        adminCache = {
-            empMap,
-            departments: Array.from(allDepartments).sort(),
-            shifts: Array.from(allShifts).sort()
-        };
-        
-        console.log(`[Admin] Cache ready: ${Object.keys(empMap).length} employees.`);
-        
-    } catch (err) {
-        console.error('[Admin] buildAdminCache error:', err.message);
-        adminCache = { empMap: {}, departments: [], shifts: [] };
-    }
-}
-
 function getFilteredResponse(department, shift) {
     const { empMap, departments, shifts: shiftsList } = adminCache;
     const employees = Object.values(empMap)
@@ -582,7 +554,7 @@ function getFilteredResponse(department, shift) {
         })
         .map(e => ({
             id: e.id, name: e.name,
-            totalQty: e.totalQty, salary: e.totalSalary,
+            totalQty: e.totalQty, salary: e.totalSalary || 0,
             days: e.daysCount
         }))
         .sort((a, b) => b.totalQty - a.totalQty);
@@ -609,29 +581,34 @@ app.post('/api/admin/summary', async (req, res) => {
         return res.status(401).json({ success: false, message: 'Sai mật khẩu Admin' });
     }
 
-    // Cache đã sẵn sàng → trả kết quả ngay
+    // If cache in memory, use it
     if (adminCache) {
         return res.json(getFilteredResponse(department, shift));
     }
 
-    // Đang build → báo client đợi
-    if (adminBuildStatus === 'building') {
-        return res.json({ success: true, loading: true, message: 'Đang tải dữ liệu... vui lòng đợi' });
+    // Try loading from admin_cache table (pre-computed during upload)
+    try {
+        const result = await pool.query('SELECT summary FROM admin_cache WHERE id = 1');
+        if (result.rows.length > 0 && result.rows[0].summary) {
+            adminCache = JSON.parse(result.rows[0].summary);
+            return res.json(getFilteredResponse(department, shift));
+        }
+    } catch (err) {
+        console.error('[Admin] Error loading cached summary:', err.message);
     }
 
-    // Lần đầu → bắt đầu build ngầm, trả lời ngay
-    adminBuildStatus = 'building';
-    res.json({ success: true, loading: true, message: 'Đang tải dữ liệu lần đầu...' });
-
-    // Defer heavy work to next tick so HTTP response flushes first
-    setTimeout(() => {
-        buildAdminCache().then(() => {
-            adminBuildStatus = 'ready';
-        }).catch(err => {
-            console.error('[Admin] Cache build error:', err);
-            adminBuildStatus = 'error';
-        });
-    }, 100);
+    // No cached data — tell admin to upload
+    return res.json({
+        success: true,
+        totalEmployees: 0,
+        totalProduction: 0,
+        avgProduction: 0,
+        totalSalary: 0,
+        employees: [],
+        departments: [],
+        shifts: [],
+        message: 'Chưa có dữ liệu. Vui lòng upload file CSV năng suất trước.'
+    });
 });
 
 // ─── Start Server ────────────────────────────────────────────────────────────
