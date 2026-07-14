@@ -36,10 +36,7 @@ async function initDB() {
                 summary TEXT
             );
         `);
-        // Create indexes separately to avoid issues
-        await pool.query('CREATE INDEX IF NOT EXISTS idx_records_emp_id ON records(emp_id)').catch(() => {});
-        await pool.query('CREATE INDEX IF NOT EXISTS idx_salary_emp_id ON monthly_salary(emp_id)').catch(() => {});
-        console.log('PostgreSQL: Tables & indexes ready');
+        console.log('PostgreSQL: Tables ready');
     } catch (err) {
         console.error('PostgreSQL init error:', err);
     }
