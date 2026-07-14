@@ -48,6 +48,9 @@ initDB();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// Version check endpoint
+app.get('/api/version', (req, res) => res.json({ version: 'v8-2026-07-15', deployed: new Date().toISOString() }));
+
 // No-cache headers for all responses
 app.use((req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
