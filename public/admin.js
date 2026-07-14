@@ -1,4 +1,4 @@
-const loginEl = document.getElementById('admin-login');
+ï»¿const loginEl = document.getElementById('admin-login');
 const dashEl = document.getElementById('admin-dashboard');
 const form = document.getElementById('admin-form');
 const passInput = document.getElementById('admin-pass');
@@ -414,7 +414,7 @@ if (dropZoneSalary) {
         const password = sessionStorage.getItem('adminPass');
 
         btnUploadSalary.disabled = true;
-        btnUploadSalary.textContent = 'Ðang d?c file Excel...';
+        btnUploadSalary.textContent = 'ï¿½ang d?c file Excel...';
         uploadMsgSalary.className = 'upload-msg';
         uploadMsgSalary.textContent = '';
 
@@ -424,30 +424,30 @@ if (dropZoneSalary) {
             const sheetName = workbook.SheetNames.find(n => n.toLowerCase().includes('t?ng h?p luong')) || workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];
             
-            // L?y d? li?u d?ng m?ng d? tìm dòng tiêu d?
+            // L?y d? li?u d?ng m?ng d? tï¿½m dï¿½ng tiï¿½u d?
             const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
             let headerRowIndex = -1;
             
             for (let i = 0; i < Math.min(10, jsonData.length); i++) {
                 const row = jsonData[i];
-                if (row && row.includes('ID') && row.includes('Tên') && row.includes('Phòng ban')) {
+                if (row && row.includes('ID') && row.includes('Tï¿½n') && row.includes('Phï¿½ng ban')) {
                     headerRowIndex = i;
                     break;
                 }
             }
 
             if (headerRowIndex === -1) {
-                throw new Error('Không tìm th?y dòng tiêu d? (có c?t ID, Tên, Phòng ban) trong sheet ' + sheetName);
+                throw new Error('Khï¿½ng tï¿½m th?y dï¿½ng tiï¿½u d? (cï¿½ c?t ID, Tï¿½n, Phï¿½ng ban) trong sheet ' + sheetName);
             }
 
-            // Ð?c l?i t? dòng tiêu d?
+            // ï¿½?c l?i t? dï¿½ng tiï¿½u d?
             const rows = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex });
             
-            // Tìm c?t ID
+            // Tï¿½m c?t ID
             const records = [];
             rows.forEach(obj => {
                 const keys = Object.keys(obj);
-                const idKey = keys.find(k => ['id', 'mã nv', 'mã nhân viên', 'textid'].includes(k.toLowerCase()));
+                const idKey = keys.find(k => ['id', 'mï¿½ nv', 'mï¿½ nhï¿½n viï¿½n', 'textid'].includes(k.toLowerCase()));
                 if (idKey && obj[idKey]) {
                     records.push({
                         emp_id: String(obj[idKey]).trim(),
@@ -457,7 +457,7 @@ if (dropZoneSalary) {
             });
 
             if (records.length === 0) {
-                throw new Error('Không tìm th?y d? li?u h?p l?. C?n c?t ID/Mã NV.');
+                throw new Error('Khï¿½ng tï¿½m th?y d? li?u h?p l?. C?n c?t ID/Mï¿½ NV.');
             }
 
             const BATCH_SIZE = 100;
@@ -471,7 +471,7 @@ if (dropZoneSalary) {
                 if (totalBatches === 1) action = 'start'; // If only 1 batch, just start and it clears then inserts. Wait, we need finish to clear cache if any. 
                 // Actually, backend doesn't cache salary yet, but just in case. Let's send start, then finish in next request if needed, or if 1 batch just start and it's fine.
 
-                btnUploadSalary.textContent = \Ðang d?y lên server... \%\;
+                btnUploadSalary.textContent = 'Dang day len server... ' + Math.round((i+1)/totalBatches*100) + '%';
 
                 const res = await fetch('/api/upload-salary-batch', {
                     method: 'POST',
@@ -498,14 +498,14 @@ if (dropZoneSalary) {
             // Wait, if i === totalBatches - 1, action is 'finish'. 
             // The backend processes rows AND action. So if action='finish', it inserts rows AND clears cache. This is perfect.
 
-            uploadMsgSalary.textContent = \? T?i lên thành công! Ðã luu \ nhân viên.\;
+            uploadMsgSalary.textContent = 'Tai len thanh cong! Da luu ' + records.length + ' nhan vien.';
             uploadMsgSalary.classList.add('success');
             uploadMsgSalary.classList.remove('hidden');
             setTimeout(() => { uploadMsgSalary.classList.add('hidden'); }, 5000);
 
             fileInputSalary.value = '';
             fileNameSalaryEl.classList.add('hidden');
-            btnUploadSalary.textContent = 'T?i Luong Lên';
+            btnUploadSalary.textContent = 'T?i Luong Lï¿½n';
 
         } catch (err) {
             console.error(err);
@@ -513,7 +513,7 @@ if (dropZoneSalary) {
             uploadMsgSalary.classList.add('error');
             uploadMsgSalary.classList.remove('hidden');
             btnUploadSalary.disabled = false;
-            btnUploadSalary.textContent = 'T?i Luong Lên';
+            btnUploadSalary.textContent = 'T?i Luong Lï¿½n';
         }
     });
 }
