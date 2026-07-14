@@ -419,9 +419,15 @@ if (dropZoneSalary) {
         uploadMsgSalary.textContent = '';
 
         try {
+            btnUploadSalary.textContent = 'Dang doc danh sach sheet...';
+            await new Promise(r => setTimeout(r, 50));
             const data = await file.arrayBuffer();
-            const workbook = XLSX.read(data, { type: 'array' });
-            const sheetName = workbook.SheetNames[0];
+            const wbInfo = XLSX.read(data, { type: 'array', bookSheets: true });
+            const sheetName = wbInfo.SheetNames.find(n => n.toLowerCase().includes('luong') || n.toLowerCase().includes('tổng hợp') || n.toLowerCase().includes('tong hop')) || wbInfo.SheetNames[0];
+            
+            btnUploadSalary.textContent = 'Dang xu ly sheet: ' + sheetName + '...';
+            await new Promise(r => setTimeout(r, 50));
+            const workbook = XLSX.read(data, { type: 'array', sheets: [sheetName] });
             const worksheet = workbook.Sheets[sheetName];
             
             // L?y d? li?u d?ng m?ng d? t�m d�ng ti�u d?
