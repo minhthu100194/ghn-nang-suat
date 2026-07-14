@@ -597,9 +597,10 @@ app.post('/api/admin/summary', async (req, res) => {
         console.error('[Admin] Error loading cached summary:', err.message);
     }
 
-    // No cached data — tell admin to upload
+    // No cached data
     return res.json({
         success: true,
+        version: 'v7-no-heavy-query',
         totalEmployees: 0,
         totalProduction: 0,
         avgProduction: 0,
