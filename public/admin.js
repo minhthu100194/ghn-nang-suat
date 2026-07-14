@@ -419,53 +419,76 @@ if (dropZoneSalary) {
         uploadMsgSalary.textContent = '';
 
         try {
-            btnUploadSalary.textContent = 'Dang doc danh sach sheet...';
-            await new Promise(r => setTimeout(r, 50));
             const data = await file.arrayBuffer();
-            const wbInfo = XLSX.read(data, { type: 'array', bookSheets: true });
-            const sheetName = wbInfo.SheetNames.find(n => n.toLowerCase().includes('luong') || n.toLowerCase().includes('tổng hợp') || n.toLowerCase().includes('tong hop')) || wbInfo.SheetNames[0];
             
-            btnUploadSalary.textContent = 'Dang xu ly sheet: ' + sheetName + '...';
-            await new Promise(r => setTimeout(r, 50));
-            const workbook = XLSX.read(data, { type: 'array', sheets: [sheetName] });
-            const worksheet = workbook.Sheets[sheetName];
+            const workerCode =  
+                importScripts('https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js');
+                self.onmessage = function(e) {
+                    try {
+                        const data = e.data;
+                        postMessage({ type: 'progress', message: 'Dang doc danh sach sheet...' });
+                        const wbInfo = XLSX.read(data, { type: 'array', bookSheets: true });
+                        const sheetName = wbInfo.SheetNames.find(n => n.toLowerCase().includes('luong') || n.toLowerCase().includes('tổng hợp') || n.toLowerCase().includes('tong hop')) || wbInfo.SheetNames[0];
+                        
+                        postMessage({ type: 'progress', message: 'Dang xu ly sheet: ' + sheetName + '...' });
+                        const workbook = XLSX.read(data, { type: 'array', sheets: [sheetName] });
+                        const worksheet = workbook.Sheets[sheetName];
+                        
+                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+                        let headerRowIndex = -1;
+                        for (let i = 0; i < Math.min(10, jsonData.length); i++) {
+                            const row = jsonData[i];
+                            if (row && row.some(c => String(c).toUpperCase() === 'ID')) {
+                                headerRowIndex = i;
+                                break;
+                            }
+                        }
+                        
+                        if (headerRowIndex === -1) {
+                            throw new Error('Khong tim thay dong tieu de (co cot ID, Ten, Phong ban) trong sheet ' + sheetName);
+                        }
+                        
+                        const rows = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex });
+                        const records = [];
+                        rows.forEach(obj => {
+                            const keys = Object.keys(obj);
+                            const idKey = keys.find(k => ['id', 'mã nv', 'mã nhân viên', 'textid'].includes(k.toLowerCase()));
+                            if (idKey && obj[idKey]) {
+                                records.push({
+                                    emp_id: String(obj[idKey]).trim(),
+                                    data: JSON.stringify(obj)
+                                });
+                            }
+                        });
+                        
+                        if (records.length === 0) {
+                            throw new Error('Khong tim thay du lieu hop le. Can cot ID/Ma NV.');
+                        }
+                        
+                        postMessage({ type: 'done', records });
+                    } catch(err) {
+                        postMessage({ type: 'error', message: err.message });
+                    }
+                };
+            ;
             
-            // L?y d? li?u d?ng m?ng d? t�m d�ng ti�u d?
-            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-            let headerRowIndex = -1;
+            const blob = new Blob([workerCode], {type: 'application/javascript'});
+            const worker = new Worker(URL.createObjectURL(blob));
             
-            for (let i = 0; i < Math.min(10, jsonData.length); i++) {
-                const row = jsonData[i];
-            if (row && row.some(c => String(c).toUpperCase() === 'ID')) {
-                    headerRowIndex = i;
-                    break;
-                }
-            }
-
-            if (headerRowIndex === -1) {
-                throw new Error('Kh�ng t�m th?y d�ng ti�u d? (c� c?t ID, T�n, Ph�ng ban) trong sheet ' + sheetName);
-            }
-
-            // �?c l?i t? d�ng ti�u d?
-            const rows = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex });
-            
-            // T�m c?t ID
-            const records = [];
-            rows.forEach(obj => {
-                const keys = Object.keys(obj);
-                const idKey = keys.find(k => ['id', 'm� nv', 'm� nh�n vi�n', 'textid'].includes(k.toLowerCase()));
-                if (idKey && obj[idKey]) {
-                    records.push({
-                        emp_id: String(obj[idKey]).trim(),
-                        data: JSON.stringify(obj)
-                    });
-                }
+            const records = await new Promise((resolve, reject) => {
+                worker.onmessage = (e) => {
+                    if (e.data.type === 'progress') {
+                        btnUploadSalary.textContent = e.data.message;
+                    } else if (e.data.type === 'done') {
+                        worker.terminate();
+                        resolve(e.data.records);
+                    } else if (e.data.type === 'error') {
+                        worker.terminate();
+                        reject(new Error(e.data.message));
+                    }
+                };
+                worker.postMessage(data, [data]);
             });
-
-            if (records.length === 0) {
-                throw new Error('Kh�ng t�m th?y d? li?u h?p l?. C?n c?t ID/M� NV.');
-            }
-
             const BATCH_SIZE = 100;
             const totalBatches = Math.ceil(records.length / BATCH_SIZE);
 
