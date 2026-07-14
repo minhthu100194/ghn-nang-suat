@@ -1,4 +1,4 @@
-﻿const loginEl = document.getElementById('admin-login');
+const loginEl = document.getElementById('admin-login');
 const dashEl = document.getElementById('admin-dashboard');
 const form = document.getElementById('admin-form');
 const passInput = document.getElementById('admin-pass');
@@ -411,7 +411,7 @@ if (dropZoneSalary) {
         if (!fileInputSalary.files.length) return;
 
         const file = fileInputSalary.files[0];
-        const password = sessionStorage.getItem('adminPass');
+        const password = adminPass;
 
         btnUploadSalary.disabled = true;
         btnUploadSalary.textContent = '�ang d?c file Excel...';
@@ -421,7 +421,7 @@ if (dropZoneSalary) {
         try {
             const data = await file.arrayBuffer();
             const workbook = XLSX.read(data, { type: 'array' });
-            const sheetName = workbook.SheetNames.find(n => n.toLowerCase().includes('t?ng h?p luong')) || workbook.SheetNames[0];
+            const sheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];
             
             // L?y d? li?u d?ng m?ng d? t�m d�ng ti�u d?
@@ -430,7 +430,7 @@ if (dropZoneSalary) {
             
             for (let i = 0; i < Math.min(10, jsonData.length); i++) {
                 const row = jsonData[i];
-                if (row && row.includes('ID') && row.includes('T�n') && row.includes('Ph�ng ban')) {
+            if (row && row.some(c => String(c).toUpperCase() === 'ID')) {
                     headerRowIndex = i;
                     break;
                 }
