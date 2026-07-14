@@ -31,8 +31,10 @@ async function initDB() {
                 emp_id TEXT,
                 data TEXT
             );
+            CREATE INDEX IF NOT EXISTS idx_records_emp_id ON records(emp_id);
+            CREATE INDEX IF NOT EXISTS idx_salary_emp_id ON monthly_salary(emp_id);
         `);
-        console.log('PostgreSQL: Table "records" ready');
+        console.log('PostgreSQL: Tables & indexes ready');
     } catch (err) {
         console.error('PostgreSQL init error:', err);
     }
@@ -621,12 +623,15 @@ app.post('/api/admin/summary', async (req, res) => {
     adminBuildStatus = 'building';
     res.json({ success: true, loading: true, message: 'Đang tải dữ liệu lần đầu...' });
 
-    buildAdminCache().then(() => {
-        adminBuildStatus = 'ready';
-    }).catch(err => {
-        console.error('[Admin] Cache build error:', err);
-        adminBuildStatus = 'error';
-    });
+    // Defer heavy work to next tick so HTTP response flushes first
+    setTimeout(() => {
+        buildAdminCache().then(() => {
+            adminBuildStatus = 'ready';
+        }).catch(err => {
+            console.error('[Admin] Cache build error:', err);
+            adminBuildStatus = 'error';
+        });
+    }, 100);
 });
 
 // ─── Start Server ────────────────────────────────────────────────────────────
