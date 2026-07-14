@@ -583,21 +583,10 @@ app.post('/api/admin/summary', async (req, res) => {
         return res.json(getFilteredResponse(department, shift));
     }
 
-    // Try loading from admin_cache table (pre-computed during upload)
-    try {
-        const result = await pool.query('SELECT summary FROM admin_cache WHERE id = 1');
-        if (result.rows.length > 0 && result.rows[0].summary) {
-            adminCache = JSON.parse(result.rows[0].summary);
-            return res.json(getFilteredResponse(department, shift));
-        }
-    } catch (err) {
-        console.error('[Admin] Error loading cached summary:', err.message);
-    }
-
-    // No cached data
+    // DEBUG: Return immediately without any DB query
     return res.json({
         success: true,
-        version: 'v7-no-heavy-query',
+        version: 'v8-zero-db',
         totalEmployees: 0,
         totalProduction: 0,
         avgProduction: 0,
@@ -605,7 +594,7 @@ app.post('/api/admin/summary', async (req, res) => {
         employees: [],
         departments: [],
         shifts: [],
-        message: 'Chưa có dữ liệu. Vui lòng upload file CSV năng suất trước.'
+        message: 'Debug mode - no DB query'
     });
 });
 
