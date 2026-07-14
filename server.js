@@ -586,7 +586,19 @@ app.post('/api/admin/summary', async (req, res) => {
         return res.json(getFilteredResponse(department, shift));
     }
 
-    // DEBUG: Return immediately without any DB query
+    // Try loading from admin_cache table (pre-computed during upload)
+    try {
+        const result = await pool.query('SELECT summary FROM admin_cache WHERE id = 1');
+        if (result.rows.length > 0 && result.rows[0].summary) {
+            adminCache = JSON.parse(result.rows[0].summary);
+            console.log('[Admin] Loaded cached summary:', Object.keys(adminCache.empMap || {}).length, 'employees');
+            return res.json(getFilteredResponse(department, shift));
+        }
+    } catch (err) {
+        console.error('[Admin] Error loading cached summary:', err.message);
+    }
+
+    // No cached data
     return res.json({
         success: true,
         version: 'v8-zero-db',
