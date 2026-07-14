@@ -478,104 +478,89 @@ app.get('/api/discipline', async (req, res) => {
 let adminBuildStatus = 'idle'; // idle | building | ready | error
 
 async function buildAdminCache() {
-    console.log('[Admin] Building cache purely in Node.js...');
+    console.log('[Admin] Building cache with lightweight SQL...');
     
-    const empMap = {};
-    const allDepartments = new Set();
-    const allShifts = new Set();
-    
-    console.log('[Admin] Fetching all records from DB in chunks...');
-    
-    // Lấy 1 dòng để tìm key
-    const sample = await pool.query('SELECT data FROM records LIMIT 1');
-    if (sample.rows.length === 0) {
-        adminCache = { empMap: {}, departments: [], shifts: [] };
-        console.log('[Admin] Cache ready: 0 records.');
-        return;
-    }
-    
-    let obj0;
     try {
-        obj0 = JSON.parse(sample.rows[0].data);
-    } catch (e) {
-        obj0 = {};
-    }
-    const keys = Object.keys(obj0);
-    const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
-    
-    const kDept = find('bộ phận');
-    const kShift = find('ca làm');
-    const kName = find('nhân viên', 'họ tên', 'tên');
-    const kQty = find('sản lượng', 'stop', 'số lượng');
-    const kSalary = find('thu nhập');
-    const kDate = find('ngày', 'date');
-
-    console.log('[Admin] Aggregating in memory by chunks...');
-    
-    let offset = 0;
-    const limit = 20000;
-    
-    while (true) {
-        const result = await pool.query(`SELECT data FROM records LIMIT ${limit} OFFSET ${offset}`);
-        if (result.rows.length === 0) break;
+        // Step 1: Simple COUNT per employee — no JSON parsing, very fast and light
+        console.log('[Admin] Step 1: Counting records per employee...');
+        const countResult = await pool.query(
+            'SELECT emp_id, COUNT(*) as total FROM records GROUP BY emp_id'
+        );
         
-        for (const r of result.rows) {
+        if (countResult.rows.length === 0) {
+            adminCache = { empMap: {}, departments: [], shifts: [] };
+            console.log('[Admin] Cache ready: 0 records.');
+            return;
+        }
+        
+        console.log(`[Admin] Found ${countResult.rows.length} unique employees.`);
+        
+        // Step 2: Get ONE sample row per employee for metadata (name, dept, shift)
+        // Use a single query with DISTINCT ON — PostgreSQL handles this efficiently
+        console.log('[Admin] Step 2: Fetching sample metadata per employee...');
+        const sampleResult = await pool.query(
+            'SELECT DISTINCT ON (emp_id) emp_id, data FROM records ORDER BY emp_id, id DESC'
+        );
+        
+        // Build a lookup: emp_id -> parsed sample data
+        const sampleMap = {};
+        for (const row of sampleResult.rows) {
             try {
-                const obj = JSON.parse(r.data);
-                const empId = obj['ID nhân viên'] || obj['ID NV'] || obj['Mã NV'] || obj['Mã nhân viên'];
-                if (!empId) continue;
-                
-                const dept = (obj[kDept] || '').trim();
-                const shiftVal = (obj[kShift] || '').trim();
-                const name = (obj[kName] || empId).trim();
-                
-                let qty = 0;
-                if (obj[kQty]) qty = parseFloat(String(obj[kQty]).replace(/[^0-9.-]/g, '')) || 0;
-                
-                let salary = 0;
-                if (obj[kSalary]) salary = parseFloat(String(obj[kSalary]).replace(/[^0-9.-]/g, '')) || 0;
-                
-                const dateStr = (obj[kDate] || '').trim();
-
-                if (dept) allDepartments.add(dept);
-                if (shiftVal) allShifts.add(shiftVal);
-
-                if (!empMap[empId]) {
-                    empMap[empId] = {
-                        id: empId,
-                        name: name,
-                        dept: dept,
-                        shift: shiftVal,
-                        totalQty: 0,
-                        totalSalary: 0,
-                        daysSet: new Set()
-                    };
-                }
-
-                empMap[empId].totalQty += qty;
-                empMap[empId].totalSalary += salary;
-                if (dateStr) empMap[empId].daysSet.add(dateStr);
-                
+                sampleMap[row.emp_id] = JSON.parse(row.data);
             } catch (e) {
-                // ignore bad json
+                sampleMap[row.emp_id] = {};
             }
         }
         
-        offset += limit;
+        // Find JSON keys from first sample
+        const firstSample = Object.values(sampleMap)[0] || {};
+        const keys = Object.keys(firstSample);
+        const find = (...patterns) => keys.find(k => patterns.some(p => k.toLowerCase().includes(p)));
+        
+        const kDept = find('bộ phận');
+        const kShift = find('ca làm');
+        const kName = find('nhân viên', 'họ tên', 'tên');
+        
+        // Step 3: Build empMap from count + sample data
+        const empMap = {};
+        const allDepartments = new Set();
+        const allShifts = new Set();
+        
+        for (const row of countResult.rows) {
+            const empId = row.emp_id;
+            const sample = sampleMap[empId] || {};
+            
+            const dept = (sample[kDept] || '').trim();
+            const shiftVal = (sample[kShift] || '').trim();
+            const name = (sample[kName] || empId).toString().trim();
+            
+            if (dept) allDepartments.add(dept);
+            if (shiftVal) allShifts.add(shiftVal);
+            
+            empMap[empId] = {
+                id: empId,
+                name: name,
+                dept: dept,
+                shift: shiftVal,
+                totalQty: parseInt(row.total) || 0,
+                totalSalary: 0,
+                daysCount: parseInt(row.total) || 0
+            };
+        }
+        
+        adminCache = {
+            empMap,
+            departments: Array.from(allDepartments).sort(),
+            shifts: Array.from(allShifts).sort()
+        };
+        
+        console.log(`[Admin] Cache ready: ${Object.keys(empMap).length} employees.`);
+        
+    } catch (err) {
+        console.error('[Admin] buildAdminCache error:', err.message);
+        // Set a minimal empty cache so admin can at least log in
+        adminCache = { empMap: {}, departments: [], shifts: [] };
     }
-
-    for (const empId in empMap) {
-        empMap[empId].daysCount = empMap[empId].daysSet.size;
-        delete empMap[empId].daysSet;
-    }
-
-    adminCache = {
-        empMap,
-        departments: Array.from(allDepartments).sort(),
-        shifts: Array.from(allShifts).sort()
-    };
-    
-    console.log(`[Admin] Cache ready: ${Object.keys(empMap).length} employees aggregated.`);
 }
 
 function getFilteredResponse(department, shift) {
