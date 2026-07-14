@@ -601,7 +601,6 @@ app.post('/api/admin/summary', async (req, res) => {
     // No cached data
     return res.json({
         success: true,
-        version: 'v8-zero-db',
         totalEmployees: 0,
         totalProduction: 0,
         avgProduction: 0,
@@ -609,7 +608,7 @@ app.post('/api/admin/summary', async (req, res) => {
         employees: [],
         departments: [],
         shifts: [],
-        message: 'Debug mode - no DB query'
+        message: 'Chưa có dữ liệu tổng hợp. Vui lòng upload lại file CSV năng suất để tạo bảng tổng hợp.'
     });
 });
 
