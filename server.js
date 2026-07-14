@@ -478,10 +478,10 @@ app.get('/api/discipline', async (req, res) => {
 let adminBuildStatus = 'idle'; // idle | building | ready | error
 
 async function buildAdminCache() {
-    console.log('[Admin] Building cache with lightweight SQL...');
+    console.log('[Admin] Building cache with ultra-lightweight SQL...');
     
     try {
-        // Step 1: Simple COUNT per employee — no JSON parsing, very fast and light
+        // Step 1: Simple COUNT per employee — no JSON parsing, very fast
         console.log('[Admin] Step 1: Counting records per employee...');
         const countResult = await pool.query(
             'SELECT emp_id, COUNT(*) as total FROM records GROUP BY emp_id'
@@ -493,22 +493,30 @@ async function buildAdminCache() {
             return;
         }
         
-        console.log(`[Admin] Found ${countResult.rows.length} unique employees.`);
+        const empIds = countResult.rows.map(r => r.emp_id);
+        console.log(`[Admin] Found ${empIds.length} unique employees. Fetching metadata...`);
         
-        // Step 2: Get ONE sample row per employee for metadata (name, dept, shift)
-        // Use a single query with DISTINCT ON — PostgreSQL handles this efficiently
-        console.log('[Admin] Step 2: Fetching sample metadata per employee...');
-        const sampleResult = await pool.query(
-            'SELECT DISTINCT ON (emp_id) emp_id, data FROM records ORDER BY emp_id, id DESC'
-        );
-        
-        // Build a lookup: emp_id -> parsed sample data
+        // Step 2: Fetch ONE sample row per employee in small batches
+        // Each batch: WHERE emp_id = ANY($1) with subquery for min(id)
         const sampleMap = {};
-        for (const row of sampleResult.rows) {
-            try {
-                sampleMap[row.emp_id] = JSON.parse(row.data);
-            } catch (e) {
-                sampleMap[row.emp_id] = {};
+        const BATCH = 30;
+        
+        for (let i = 0; i < empIds.length; i += BATCH) {
+            const batch = empIds.slice(i, i + BATCH);
+            const res = await pool.query(
+                `SELECT r.emp_id, r.data FROM records r
+                 INNER JOIN (
+                     SELECT emp_id, MIN(id) as mid FROM records 
+                     WHERE emp_id = ANY($1::text[]) GROUP BY emp_id
+                 ) s ON r.id = s.mid`,
+                [batch]
+            );
+            for (const row of res.rows) {
+                try {
+                    sampleMap[row.emp_id] = JSON.parse(row.data);
+                } catch (e) {
+                    sampleMap[row.emp_id] = {};
+                }
             }
         }
         
@@ -558,7 +566,6 @@ async function buildAdminCache() {
         
     } catch (err) {
         console.error('[Admin] buildAdminCache error:', err.message);
-        // Set a minimal empty cache so admin can at least log in
         adminCache = { empMap: {}, departments: [], shifts: [] };
     }
 }
