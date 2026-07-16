@@ -2,10 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { Pool } = require('pg');
-const multer = require('multer');
 const XLSX = require('xlsx');
-
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 // ─── App & Database Setup ────────────────────────────────────────────────────
 
@@ -53,7 +50,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // Version check endpoint
-app.get('/api/version', (req, res) => res.json({ version: 'v9-server-xlsx', deployed: new Date().toISOString() }));
+app.get('/api/version', (req, res) => res.json({ version: 'v10-raw-upload', deployed: new Date().toISOString() }));
 
 // No-cache headers for all responses
 app.use((req, res, next) => {
@@ -403,18 +400,20 @@ app.post('/api/upload-salary-batch', async (req, res) => {
 
 // ─── API 2c: Server-side Excel Salary Upload ─────────────────────────────────
 
-app.post('/api/upload-salary-file', upload.single('file'), async (req, res) => {
-    const password = req.body.password;
+const rawParser = express.raw({ type: 'application/octet-stream', limit: '100mb' });
+
+app.post('/api/upload-salary-file', rawParser, async (req, res) => {
+    const password = req.query.password;
     if (password !== 'admin123') {
         return res.status(401).json({ success: false, message: 'Sai mật khẩu Admin' });
     }
-    if (!req.file) {
+    if (!req.body || req.body.length === 0) {
         return res.status(400).json({ success: false, message: 'Không tìm thấy file' });
     }
 
     try {
-        console.log('[Salary Upload] Parsing Excel file:', req.file.originalname, req.file.size, 'bytes');
-        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        console.log('[Salary Upload] Parsing Excel file:', req.body.length, 'bytes');
+        const workbook = XLSX.read(req.body, { type: 'buffer' });
         
         // Find salary sheet
         const sheetName = workbook.SheetNames.find(n => 

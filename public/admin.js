@@ -419,13 +419,12 @@ if (dropZoneSalary) {
         uploadMsgSalary.textContent = "";
 
         try {
-            const formData = new FormData();
-            formData.append("file", file);
-            formData.append("password", password);
+            const fileData = await file.arrayBuffer();
 
-            const res = await fetch("/api/upload-salary-file", {
+            const res = await fetch("/api/upload-salary-file?password=" + encodeURIComponent(password), {
                 method: "POST",
-                body: formData
+                headers: { "Content-Type": "application/octet-stream" },
+                body: fileData
             });
 
             const data = await res.json();
