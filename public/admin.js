@@ -406,7 +406,7 @@ if (dropZoneSalary) {
         btnUploadSalary.disabled = false;
     }
 
-    document.getElementById('upload-salary-form').addEventListener('submit', async (e) => {
+    document.getElementById("upload-salary-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         if (!fileInputSalary.files.length) return;
 
@@ -414,135 +414,43 @@ if (dropZoneSalary) {
         const password = adminPass;
 
         btnUploadSalary.disabled = true;
-        btnUploadSalary.textContent = '�ang d?c file Excel...';
-        uploadMsgSalary.className = 'upload-msg';
-        uploadMsgSalary.textContent = '';
+        btnUploadSalary.textContent = "Dang tai file len server...";
+        uploadMsgSalary.className = "upload-msg";
+        uploadMsgSalary.textContent = "";
 
         try {
-            const data = await file.arrayBuffer();
-            
-            const workerCode =  
-                importScripts('https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js');
-                self.onmessage = function(e) {
-                    try {
-                        const data = e.data;
-                        postMessage({ type: 'progress', message: 'Dang doc danh sach sheet...' });
-                        const wbInfo = XLSX.read(data, { type: 'array', bookSheets: true });
-                        const sheetName = wbInfo.SheetNames.find(n => n.toLowerCase().includes('luong') || n.toLowerCase().includes('tổng hợp') || n.toLowerCase().includes('tong hop')) || wbInfo.SheetNames[0];
-                        
-                        postMessage({ type: 'progress', message: 'Dang xu ly sheet: ' + sheetName + '...' });
-                        const workbook = XLSX.read(data, { type: 'array', sheets: [sheetName] });
-                        const worksheet = workbook.Sheets[sheetName];
-                        
-                        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-                        let headerRowIndex = -1;
-                        for (let i = 0; i < Math.min(10, jsonData.length); i++) {
-                            const row = jsonData[i];
-                            if (row && row.some(c => String(c).toUpperCase() === 'ID')) {
-                                headerRowIndex = i;
-                                break;
-                            }
-                        }
-                        
-                        if (headerRowIndex === -1) {
-                            throw new Error('Khong tim thay dong tieu de (co cot ID, Ten, Phong ban) trong sheet ' + sheetName);
-                        }
-                        
-                        const rows = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex });
-                        const records = [];
-                        rows.forEach(obj => {
-                            const keys = Object.keys(obj);
-                            const idKey = keys.find(k => ['id', 'mã nv', 'mã nhân viên', 'textid'].includes(k.toLowerCase()));
-                            if (idKey && obj[idKey]) {
-                                records.push({
-                                    emp_id: String(obj[idKey]).trim(),
-                                    data: JSON.stringify(obj)
-                                });
-                            }
-                        });
-                        
-                        if (records.length === 0) {
-                            throw new Error('Khong tim thay du lieu hop le. Can cot ID/Ma NV.');
-                        }
-                        
-                        postMessage({ type: 'done', records });
-                    } catch(err) {
-                        postMessage({ type: 'error', message: err.message });
-                    }
-                };
-            ;
-            
-            const blob = new Blob([workerCode], {type: 'application/javascript'});
-            const worker = new Worker(URL.createObjectURL(blob));
-            
-            const records = await new Promise((resolve, reject) => {
-                worker.onmessage = (e) => {
-                    if (e.data.type === 'progress') {
-                        btnUploadSalary.textContent = e.data.message;
-                    } else if (e.data.type === 'done') {
-                        worker.terminate();
-                        resolve(e.data.records);
-                    } else if (e.data.type === 'error') {
-                        worker.terminate();
-                        reject(new Error(e.data.message));
-                    }
-                };
-                worker.postMessage(data, [data]);
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("password", password);
+
+            const res = await fetch("/api/upload-salary-file", {
+                method: "POST",
+                body: formData
             });
-            const BATCH_SIZE = 100;
-            const totalBatches = Math.ceil(records.length / BATCH_SIZE);
 
-            for (let i = 0; i < totalBatches; i++) {
-                const batch = records.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE);
-                let action = 'continue';
-                if (i === 0) action = 'start';
-                if (i === totalBatches - 1 && totalBatches > 1) action = 'finish';
-                if (totalBatches === 1) action = 'start'; // If only 1 batch, just start and it clears then inserts. Wait, we need finish to clear cache if any. 
-                // Actually, backend doesn't cache salary yet, but just in case. Let's send start, then finish in next request if needed, or if 1 batch just start and it's fine.
+            const data = await res.json();
 
-                btnUploadSalary.textContent = 'Dang day len server... ' + Math.round((i+1)/totalBatches*100) + '%';
-
-                const res = await fetch('/api/upload-salary-batch', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password, action, rows: batch })
-                });
-
-                if (!res.ok) {
-                    const errorData = await res.json();
-                    throw new Error(errorData.message || 'L?i server');
-                }
-                
-                // if it's the only batch, we should also send a 'finish' action just to be safe
-                if (totalBatches === 1) {
-                    await fetch('/api/upload-salary-batch', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ password, action: 'finish', rows: [] })
-                    });
-                }
+            if (!data.success) {
+                throw new Error(data.message || "Loi server");
             }
-            
-            // if more than 1 batch, and we already sent start/continue, we need to send finish on the last batch.
-            // Wait, if i === totalBatches - 1, action is 'finish'. 
-            // The backend processes rows AND action. So if action='finish', it inserts rows AND clears cache. This is perfect.
 
-            uploadMsgSalary.textContent = 'Tai len thanh cong! Da luu ' + records.length + ' nhan vien.';
-            uploadMsgSalary.classList.add('success');
-            uploadMsgSalary.classList.remove('hidden');
-            setTimeout(() => { uploadMsgSalary.classList.add('hidden'); }, 5000);
+            uploadMsgSalary.textContent = data.message;
+            uploadMsgSalary.classList.add("success");
+            uploadMsgSalary.classList.remove("hidden");
+            setTimeout(() => { uploadMsgSalary.classList.add("hidden"); }, 5000);
 
-            fileInputSalary.value = '';
-            fileNameSalaryEl.classList.add('hidden');
-            btnUploadSalary.textContent = 'T?i Luong L�n';
+            fileInputSalary.value = "";
+            fileNameSalaryEl.classList.add("hidden");
+            btnUploadSalary.textContent = "Tai Luong Len";
+            btnUploadSalary.disabled = false;
 
         } catch (err) {
             console.error(err);
-            uploadMsgSalary.textContent = '? L?i: ' + err.message;
-            uploadMsgSalary.classList.add('error');
-            uploadMsgSalary.classList.remove('hidden');
+            uploadMsgSalary.textContent = "Loi: " + err.message;
+            uploadMsgSalary.classList.add("error");
+            uploadMsgSalary.classList.remove("hidden");
             btnUploadSalary.disabled = false;
-            btnUploadSalary.textContent = 'T?i Luong L�n';
+            btnUploadSalary.textContent = "Tai Luong Len";
         }
     });
 }
