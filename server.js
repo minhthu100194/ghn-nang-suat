@@ -2,8 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const { Pool } = require('pg');
-const XLSX = require('xlsx');
-
+const ExcelJS = require('exceljs');
+const fs = require('fs');
+const os = require('os');
 // ─── App & Database Setup ────────────────────────────────────────────────────
 
 const app = express();
@@ -50,7 +51,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // Version check endpoint
-app.get('/api/version', (req, res) => res.json({ version: 'v10-raw-upload', deployed: new Date().toISOString() }));
+app.get('/api/version', (req, res) => res.json({ version: 'v11-streaming-parser', deployed: new Date().toISOString() }));
 
 // No-cache headers for all responses
 app.use((req, res, next) => {
@@ -400,93 +401,119 @@ app.post('/api/upload-salary-batch', async (req, res) => {
 
 // ─── API 2c: Server-side Excel Salary Upload ─────────────────────────────────
 
-const rawParser = express.raw({ type: 'application/octet-stream', limit: '100mb' });
-
-app.post('/api/upload-salary-file', rawParser, async (req, res) => {
+app.post('/api/upload-salary-file', async (req, res) => {
     const password = req.query.password;
     if (password !== 'admin123') {
         return res.status(401).json({ success: false, message: 'Sai mật khẩu Admin' });
     }
-    if (!req.body || req.body.length === 0) {
-        return res.status(400).json({ success: false, message: 'Không tìm thấy file' });
-    }
 
-    try {
-        console.log('[Salary Upload] Parsing Excel file:', req.body.length, 'bytes');
-        const workbook = XLSX.read(req.body, { type: 'buffer' });
-        
-        // Find salary sheet
-        const sheetName = workbook.SheetNames.find(n => 
-            n.toLowerCase().includes('lương') || n.toLowerCase().includes('luong') || 
-            n.toLowerCase().includes('tổng hợp') || n.toLowerCase().includes('tong hop')
-        ) || workbook.SheetNames[0];
-        
-        console.log('[Salary Upload] Using sheet:', sheetName);
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        // Find header row (look for 'ID' column in first 15 rows)
-        let headerRowIndex = -1;
-        for (let i = 0; i < Math.min(15, jsonData.length); i++) {
-            const row = jsonData[i];
-            if (row && row.some(c => String(c).toUpperCase() === 'ID')) {
-                headerRowIndex = i;
-                break;
-            }
-        }
-        
-        if (headerRowIndex === -1) {
-            return res.status(400).json({ success: false, message: 'Không tìm thấy dòng tiêu đề có cột ID trong sheet ' + sheetName });
-        }
-        
-        // Parse rows from header
-        const rows = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex });
-        const records = [];
-        rows.forEach(obj => {
-            const keys = Object.keys(obj);
-            const idKey = keys.find(k => ['id', 'mã nv', 'mã nhân viên', 'textid'].includes(k.toLowerCase()));
-            if (idKey && obj[idKey]) {
-                records.push({
-                    emp_id: String(obj[idKey]).trim(),
-                    data: JSON.stringify(obj)
-                });
-            }
-        });
-        
-        if (records.length === 0) {
-            return res.status(400).json({ success: false, message: 'Không tìm thấy dữ liệu hợp lệ (cần cột ID/Mã NV)' });
-        }
-        
-        console.log('[Salary Upload] Found', records.length, 'records. Inserting...');
-        
-        // Insert into DB
-        const client = await pool.connect();
+    const tmpFilePath = path.join(os.tmpdir(), `upload_salary_${Date.now()}.xlsx`);
+    const writeStream = fs.createWriteStream(tmpFilePath);
+
+    req.pipe(writeStream);
+
+    req.on('error', (err) => {
+        console.error('[Salary Upload] Request Error:', err);
+        return res.status(500).json({ success: false, message: 'Lỗi tải file: ' + err.message });
+    });
+
+    writeStream.on('error', (err) => {
+        console.error('[Salary Upload] Write Error:', err);
+        return res.status(500).json({ success: false, message: 'Lỗi lưu file tạm: ' + err.message });
+    });
+
+    writeStream.on('finish', async () => {
         try {
-            await client.query('DELETE FROM monthly_salary');
-            
-            const BATCH_SIZE = 100;
-            for (let i = 0; i < records.length; i += BATCH_SIZE) {
-                const batch = records.slice(i, i + BATCH_SIZE);
-                const values = [];
-                const params = [];
-                batch.forEach((row, idx) => {
-                    const offset = idx * 2;
-                    values.push(`($${offset + 1}, $${offset + 2})`);
-                    params.push(row.emp_id, row.data);
-                });
-                await client.query(`INSERT INTO monthly_salary (emp_id, data) VALUES ${values.join(',')}`, params);
+            console.log('[Salary Upload] File saved to tmp, start streaming parse...');
+            const workbookReader = new ExcelJS.stream.xlsx.WorkbookReader(tmpFilePath, {
+                worksheets: 'emit',
+                sharedStrings: 'cache'
+            });
+
+            let headerRowIndex = -1;
+            let idColIndex = -1;
+            let headers = [];
+            let records = [];
+
+            const client = await pool.connect();
+            try {
+                // We will delete existing data first
+                await client.query('DELETE FROM monthly_salary');
+
+                // Read worksheets
+                for await (const worksheetReader of workbookReader) {
+                    const sheetName = worksheetReader.name.toLowerCase();
+                    if (sheetName.includes('lương') || sheetName.includes('luong') || sheetName.includes('tổng hợp') || sheetName.includes('tong hop')) {
+                        console.log('[Salary Upload] Found target sheet:', worksheetReader.name);
+                        let rowCount = 0;
+                        for await (const row of worksheetReader) {
+                            rowCount++;
+                            if (headerRowIndex === -1 && rowCount <= 15) {
+                                const vals = row.values;
+                                const idx = vals.findIndex(c => c && ['ID', 'MÃ NV', 'MÃ NHÂN VIÊN', 'TEXTID'].includes(String(c).toUpperCase().trim()));
+                                if (idx !== -1) {
+                                    headerRowIndex = rowCount;
+                                    idColIndex = idx;
+                                    headers = vals;
+                                }
+                            } else if (headerRowIndex !== -1) {
+                                const emp_id = row.values[idColIndex];
+                                if (emp_id) {
+                                    const obj = {};
+                                    for (let i = 1; i < headers.length; i++) {
+                                        if (headers[i]) {
+                                            obj[headers[i]] = row.values[i];
+                                        }
+                                    }
+                                    records.push({
+                                        emp_id: String(emp_id).trim(),
+                                        data: JSON.stringify(obj)
+                                    });
+
+                                    // Batch insert to keep memory low
+                                    if (records.length >= 1000) {
+                                        await insertBatch(client, records);
+                                        records = [];
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // Insert remaining
+                if (records.length > 0) {
+                    await insertBatch(client, records);
+                }
+
+                console.log('[Salary Upload] Done streaming parse & insert!');
+                res.json({ success: true, message: 'Tải lên thành công!' });
+            } finally {
+                client.release();
             }
-            
-            console.log('[Salary Upload] Done!', records.length, 'records saved');
-            res.json({ success: true, message: 'Tải lên thành công! Đã lưu ' + records.length + ' nhân viên.', count: records.length });
-        } finally {
-            client.release();
+
+            // Cleanup
+            fs.unlink(tmpFilePath, () => {});
+        } catch (err) {
+            console.error('[Salary Upload] Parse/DB Error:', err);
+            fs.unlink(tmpFilePath, () => {});
+            res.status(500).json({ success: false, message: 'Lỗi xử lý Excel: ' + err.message });
         }
-    } catch (err) {
-        console.error('[Salary Upload] Error:', err);
-        res.status(500).json({ success: false, message: 'Lỗi xử lý file: ' + err.message });
-    }
+    });
 });
+
+async function insertBatch(client, batch) {
+    if (batch.length === 0) return;
+    const values = [];
+    const params = [];
+    batch.forEach((row, idx) => {
+        const offset = idx * 2;
+        values.push(`($${offset + 1}, $${offset + 2})`);
+        params.push(row.emp_id, row.data);
+    });
+    await client.query(`INSERT INTO monthly_salary (emp_id, data) VALUES ${values.join(',')}`, params);
+}
 
 // ─── API 3: Employee Schedule ────────────────────────────────────────────────
 
